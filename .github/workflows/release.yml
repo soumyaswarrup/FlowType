@@ -1,0 +1,64 @@
+# Builds FlowType.exe on a Windows machine and publishes FlowType-Windows.zip
+# on the Releases page. Runs when you push a version tag (e.g. v1.0.0),
+# or manually from the Actions tab.
+name: Build Windows release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install packages
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt pyinstaller
+
+      - name: Build FlowType.exe
+        run: |
+          if (!(Test-Path flowtype.ico)) { python flowtype.py --make-icon }
+          python -m PyInstaller --noconfirm --clean --windowed --name FlowType `
+            --icon flowtype.ico `
+            --collect-data faster_whisper `
+            --collect-binaries ctranslate2 `
+            --hidden-import pystray._win32 `
+            flowtype.py
+
+      - name: Self-test the packaged app
+        run: |
+          Start-Process -Wait -FilePath "dist\FlowType\FlowType.exe" -ArgumentList "--selftest", "$PWD\selftest.txt"
+          Get-Content selftest.txt
+          if (-not (Select-String -Path selftest.txt -Pattern "SELFTEST OK" -Quiet)) { exit 1 }
+
+      - name: Zip
+        run: |
+          Copy-Item SHARE-README.txt "dist\FlowType\HOW TO INSTALL.txt"
+          Compress-Archive -Path dist\FlowType -DestinationPath FlowType-Windows.zip -Force
+
+      - name: Publish release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: FlowType-Windows.zip
+          body: |
+            **Download `FlowType-Windows.zip` below**, unzip it and double-click `FlowType.exe`.
+            Windows may say "Windows protected your PC" → click **More info → Run anyway** (the app isn't code-signed).
+
+      - name: Keep the zip as a build artifact
+        if: ${{ !startsWith(github.ref, 'refs/tags/') }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: FlowType-Windows
+          path: FlowType-Windows.zip
