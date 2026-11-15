@@ -229,7 +229,10 @@ def _grammar_pass(text, cfg, timeout):
     if not text.strip():
         return text, [], []
     data = urllib.parse.urlencode({"text": text, "language": cfg.get("grammar_language", "en-US")}).encode()
-    req = urllib.request.Request(LT_URL, data=data, method="POST",
+    url = LT_URL
+    if cfg.get("grammar_mode") == "offline":
+        url = cfg.get("grammar_server") or "http://127.0.0.1:8081/v2/check"
+    req = urllib.request.Request(url, data=data, method="POST",
                                  headers={"content-type": "application/x-www-form-urlencoded"})
     with urllib.request.urlopen(req, timeout=timeout) as r:
         matches = json.loads(r.read().decode("utf-8")).get("matches", [])
@@ -528,3 +531,95 @@ def choose_tone(setting, title):
         return setting
     kind = app_kind(title)
     return {"chat": "casual", "code": "code", "email": "professional", "doc": "professional"}.get(kind, "plain")
+
+
+# ---------------------------------------------------------------- spoken punctuation (opt-in)
+SPOKEN_PUNCT = [
+    (r"new paragraph", "\n\n", "LR"), (r"new line", "\n", "LR"),   # first, so a spoken "comma" before them stays
+    (r"question mark", "?", "L"), (r"exclamation (?:mark|point)", "!", "L"), (r"full stop|period", ".", "L"),
+    (r"comma", ",", "L"), (r"semicolon", ";", "L"), (r"colon", ":", "L"),
+    (r"open quote|begin quote", "“", "R"), (r"close quote|end quote|unquote", "”", "L"),
+    (r"open (?:bracket|paren|parenthesis)", "(", "R"), (r"close (?:bracket|paren|parenthesis)", ")", "L"),
+    (r"dash", "–", ""), (r"hyphen", "-", "LR"), (r"ellipsis|dot dot dot", "…", "L"),
+]
+
+
+def spoken_punctuation(text):
+    """'hi comma how are you question mark' -> 'hi, how are you?'"""
+    t = text
+    for spoken, sym, glue in SPOKEN_PUNCT:
+        pat = r"(?i)[ ,]*\b(?:%s)\b[,.]?([ ]*)" % spoken
+
+        def sub(m, sym=sym, glue=glue):
+            right = "" if ("R" in glue or sym.startswith("\n")) else " "
+            left = "" if "L" in glue else " "
+            return left + sym + right
+        t = re.sub(pat, sub, t)
+    t = re.sub(r"[ ]{2,}", " ", t)
+    t = re.sub(r" +([,.;:?!”)…])", r"\1", t)
+    t = re.sub(r"[.,]\s*([.?!,;:])", r"\1", t)          # Whisper's own '.' + spoken 'question mark'
+    t = re.sub(r"[ ]*\n[ ]*", "\n", t)
+    return t.strip()
+
+
+# ---------------------------------------------------------------- "undo that"
+UNDO_RE = re.compile(r"(?i)^\s*(?:undo|undo that|undo it|undo the last one|delete (?:that|the last one)|remove that)[\s.!]*$")
+
+
+def is_undo_command(raw):
+    return bool(UNDO_RE.match(raw or ""))
+
+
+# ---------------------------------------------------------------- weekly stats
+def compute_stats(history_path, days=7):
+    """Words dictated in the last `days` days and rough typing time saved
+    (typing ~40 words/min vs speaking ~140 words/min)."""
+    import datetime as _dt
+    words = sessions = 0
+    since = _dt.datetime.now() - _dt.timedelta(days=days)
+    try:
+        with open(history_path, "r", encoding="utf-8") as f:
+            for line in f:
+                try:
+                    d = json.loads(line)
+                    if _dt.datetime.fromisoformat(d["time"]) < since:
+                        continue
+                    words += len(re.findall(r"\w+", d.get("text", "")))
+                    sessions += 1
+                except Exception:
+                    continue
+    except FileNotFoundError:
+        pass
+    saved_min = words / 40.0 - words / 140.0
+    return {"words": words, "sessions": sessions, "saved_min": max(0.0, saved_min)}
+
+
+def stats_line(st):
+    if not st["words"]:
+        return "This week: no dictation yet"
+    m = st["saved_min"]
+    saved = f"{m / 60:.1f} h" if m >= 90 else f"{m:.0f} min"
+    return f"This week: {st['words']:,} words · ~{saved} saved"
+
+
+# ---------------------------------------------------------------- sensitive apps
+DEFAULT_PAUSE_APPS = ["1password", "bitwarden", "keepass", "lastpass", "dashlane", "password manager",
+                      "netbanking", "net banking", "internet banking", "sign in", "log in", "login"]
+
+
+def is_paused_app(title, patterns):
+    t = (title or "").lower()
+    return any(p.strip().lower() in t for p in (patterns or []) if p.strip())
+
+
+# ---------------------------------------------------------------- meeting notes
+MEETING_SYSTEM = """You turn a raw meeting transcript into clear notes. Reply in Markdown with exactly these sections:
+## Summary
+3-6 sentences on what was discussed and decided.
+## Key points
+Bullet list.
+## Decisions
+Bullet list (write "None recorded" if there were none).
+## Action items
+A checklist like "- [ ] Owner: task (due date if mentioned)". Use "Someone" when no owner was said.
+Only use what is in the transcript. Do not add a title or anything before "## Summary"."""

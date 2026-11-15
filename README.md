@@ -72,6 +72,10 @@ Prefer no installer? Download **`FlowType-Windows.zip`** instead, unzip it and d
 | Say **"insert my signature"** | Pastes a saved snippet (see below) |
 | Select text, **hold `Ctrl + Alt + Shift`**, say *"make this more formal"* | **Command mode** — rewrites the selection (needs an AI, see below) |
 | Select a word, press **`Ctrl + Alt + D`** | Teaches FlowType that word / correction |
+| Say **"undo that"** | Undoes what was just typed (Ctrl+Z) |
+| Press **`Ctrl + Alt + V`** | Pastes your last dictation again (e.g. after it went to the wrong window) |
+| Select text, press **`Ctrl + Alt + R`** | Reads it aloud (press again to stop) |
+| Hold a **mouse side button** or **foot pedal** | Same as holding Ctrl + Alt (turn on in Settings) |
 
 Filler words (um, uh) are removed automatically.
 
@@ -89,7 +93,7 @@ Command mode needs an AI. Pick one in the tray menu → **Command mode AI**:
 With Groq or Claude, the selected text and your instruction are sent to that service.
 
 ### 2. Voice snippets
-Say **"insert my signature"** (or "paste my email address", etc.) and saved text is pasted. Edit them in the tray → **Edit snippets, words & settings** → the `"snippets"` section:
+Say **"insert my signature"** (or "paste my email address", etc.) and saved text is pasted. Edit them in **Settings → Snippets** (one per line: `name = text`, `\n` for a new line), or in `config.json`:
 ```json
 "snippets": {
   "signature": "Best regards,\nSoumya Swarup Sahoo",
@@ -121,11 +125,38 @@ If your PC has an NVIDIA graphics card, FlowType uses it and text appears severa
 ### 6. Live preview
 While you hold the key, the words you're saying appear in the on-screen pill as you speak, so you know it's hearing you right.
 
+### 7. Meeting notes
+Tray menu → **Start meeting notes**, let it run through the meeting (up to 3 hours), then **Stop meeting notes**. You get a Markdown file in `Documents\FlowType` with a timestamped transcript. With an AI turned on (Command mode AI), it also writes a **summary, key points, decisions and action items** at the top.
+Tell people in the meeting that you're recording.
+
+### 8. Transcribe audio and video files
+Tray menu → **Transcribe an audio / video file…** and pick an mp3, m4a, wav, mp4, mkv, mov, webm… A timestamped `… - transcript.txt` is saved next to it. Everything runs on your computer.
+
+### 9. Speed vs accuracy
+Tray menu → **Speed**: **Fast** (base.en), **Balanced** (small.en, default) or **Most accurate** (large-v3-turbo, best with an NVIDIA GPU). It switches in the background; a new model downloads once.
+
+### 10. Spoken punctuation
+Turn on in Settings, then say *"comma"*, *"full stop"*, *"question mark"*, *"exclamation mark"*, *"colon"*, *"open quote … close quote"*, *"new line"*, *"new paragraph"*:
+*"hi comma how are you question mark"* → **Hi, how are you?**
+
+### 11. Weekly stats
+The tray menu shows how many words you dictated this week and roughly how much typing time that saved.
+
+### 12. Pauses in sensitive apps
+FlowType won't listen while a password manager or banking window is in front (1Password, Bitwarden, KeePass, LastPass, net banking…). Edit the list in Settings → **Privacy**.
+
+### 13. Automatic updates
+FlowType checks GitHub for a new version once a day. When there is one, the tray menu shows **Update to FlowType x.y.z**: one click downloads the installer, updates and restarts. Turn off in Settings → Privacy.
+
 ### ✍️ Grammar check (optional, off by default)
-Turn it on in the tray menu → **Grammar check**. Clear mistakes are fixed before typing (*"I has completed"* → *"I have completed"*). When there's more than one possible fix, a small popup suggests it instead of guessing. Uses the free [LanguageTool](https://languagetool.org) service, so when it's on the **dictated text is sent to LanguageTool** for checking (see the [privacy policy](PRIVACY.md)).
+Tray menu → **Grammar**:
+- **Online**: uses the free [LanguageTool](https://languagetool.org) service, so the **dictated text is sent to LanguageTool** (see the [privacy policy](PRIVACY.md)).
+- **Offline**: runs LanguageTool **on your computer**, nothing leaves it. Needs Java 17+ (free from [adoptium.net](https://adoptium.net)); the first time it downloads LanguageTool (about 250 MB).
+
+Clear mistakes are fixed before typing (*"I has completed"* → *"I have completed"*). When there's more than one possible fix, a small popup suggests it instead of guessing.
 
 ### ⚙️ Settings
-Click the **^** arrow next to the clock → **right-click the purple mic**: command mode AI, tone, live preview, grammar check, email formatting, auto-send, snippets & words, history, quit.
+Click the purple mic next to the clock (on Windows: the **^** arrow → click the mic) → **Settings…**. Tabs for hotkeys, speed, tone, grammar, mouse/foot pedal, snippets, your words, privacy (paused apps, history) and about.
 
 ## 🛠️ For developers
 Python app (`platform_support.py` = everything that differs between Windows / macOS / Linux; `flowtype.py` = tray app, hotkeys, recording, overlay, command mode; `textproc.py` = clean-up, "send it", grammar, email layout, snippets, tone per app, AI calls).

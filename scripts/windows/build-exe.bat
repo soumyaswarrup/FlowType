@@ -21,6 +21,9 @@ if exist dist rmdir /s /q dist
   --collect-data faster_whisper ^
   --collect-binaries ctranslate2 ^
   --hidden-import pystray._win32 ^
+  --hidden-import pynput.mouse._win32 --hidden-import pynput.keyboard._win32 ^
+  --hidden-import pyttsx3.drivers --hidden-import pyttsx3.drivers.sapi5 ^
+  --hidden-import settings_window --hidden-import grammar_local ^
   flowtype.py >> "%LOG%" 2>&1
 if not exist "dist\FlowType\FlowType.exe" ( echo [X] Packaging failed - see build.log & echo BUILD FAILED >> "%LOG%" & pause & exit /b 1 )
 

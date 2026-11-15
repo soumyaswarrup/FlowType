@@ -32,11 +32,15 @@ jobs:
           $ver = "${{ github.event.release.tag_name }}"
           if (-not $ver) { $ver = "0.0.0" }
           python scripts\windows\make_version_file.py $ver
+          Set-Content -Path _version.py -Value "__version__ = `"$($ver.TrimStart('v'))`"" -Encoding utf8
           python -m PyInstaller --noconfirm --clean --windowed --name FlowType `
             --icon flowtype.ico --version-file version_info.txt `
             --collect-data faster_whisper `
             --collect-binaries ctranslate2 `
             --hidden-import pystray._win32 `
+            --hidden-import pynput.mouse._win32 --hidden-import pynput.keyboard._win32 `
+            --hidden-import pyttsx3.drivers --hidden-import pyttsx3.drivers.sapi5 `
+            --hidden-import settings_window --hidden-import grammar_local `
             flowtype.py
 
       - name: Self-test the packaged app

@@ -9,3 +9,4 @@ history.jsonl
 selftest.txt
 .env
 version_info.txt
+_version.py

@@ -17,6 +17,12 @@ import time
 import traceback
 
 APP_NAME = "FlowType"
+APP_VERSION = "1.6.0"
+try:  # release builds write the exact tag into _version.py
+    from _version import __version__ as APP_VERSION  # noqa: F811
+except Exception:
+    pass
+GITHUB_REPO = "soumyaswarrup/FlowType"
 FROZEN = getattr(sys, "frozen", False)  # True when running as the packaged FlowType.exe
 APP_DIR = os.path.dirname(sys.executable) if FROZEN else os.path.dirname(os.path.abspath(__file__))
 # The packaged app keeps settings in %APPDATA%\FlowType so each user has their own.
@@ -36,6 +42,8 @@ DEFAULT_CONFIG = {
     "compute_type": "auto",
     "grammar_check": False,       # opt-in: sends dictated text to LanguageTool (see PRIVACY.md)
     "grammar_language": "en-US",
+    "grammar_mode": "online",     # online = LanguageTool website, offline = LanguageTool on this PC (Java)
+    "spoken_punctuation": False,  # say "comma", "question mark", "new line"...
     "email_format": True,
     "input_device": None,
     "cleanup": "basic",
@@ -48,6 +56,13 @@ DEFAULT_CONFIG = {
         "send_window_title": True,
     },
     "hotkey_learn": "ctrl+alt+d",
+    "hotkey_paste_last": "ctrl+alt+v",
+    "hotkey_read_aloud": "ctrl+alt+r",
+    "mouse_button": "",           # "", "middle", "x1" (back), "x2" (forward): hold it to talk
+    "check_updates": True,
+    "pause_in_apps": ["1password", "bitwarden", "keepass", "lastpass", "dashlane", "netbanking",
+                      "internet banking"],
+    "meeting_folder": "",
     "command_mode": True,
     "tone": "auto",               # auto | casual | professional | code | plain (tray -> Tone)
     "live_preview": True,
@@ -66,6 +81,7 @@ DEFAULT_CONFIG = {
     "save_history": True,
     "min_seconds": 0.35,
     "max_seconds": 600,
+    "meeting_max_minutes": 180,
 }
 
 # Running without a console (pythonw / the .exe): give progress bars somewhere to write.
@@ -185,6 +201,14 @@ def load_model(cfg):
     return m
 
 
+def _ver(v):
+    out = []
+    for part in v.split("."):
+        num = "".join(ch for ch in part if ch.isdigit())
+        out.append(int(num) if num else 0)
+    return tuple(out + [0] * (3 - len(out)))
+
+
 # ---------------------------------------------------------------- the app
 class App:
     def __init__(self):
@@ -219,6 +243,10 @@ class App:
         self.last_typed = ""
         self.model_lock = threading.Lock()
         self.icon = None
+        self.update_info = None    # (version, setup_url) when a newer release exists
+        self.tts = None
+        self.local_lt = None
+        self.root = None
 
     # ---- hotkeys
     def _key_groups(self, combo):
@@ -292,7 +320,8 @@ class App:
         self.frames.append(indata.copy())
         self.level = float(self.np.sqrt(self.np.mean(indata ** 2)))
         now = time.time()
-        if self.recording and now - self.rec_started > self.cfg["max_seconds"]:
+        limit = self.cfg.get("meeting_max_minutes", 180) * 60 if self.rec_source == "meeting" else self.cfg["max_seconds"]
+        if self.recording and now - self.rec_started > limit:
             self._request_stop()
 
     def beep(self, freq):
@@ -300,6 +329,10 @@ class App:
             ps.beep(freq)
 
     def start_recording(self, source):
+        import textproc as tp
+        if source in ("hold", "toggle", "mouse") and tp.is_paused_app(foreground_title(), self.cfg.get("pause_in_apps")):
+            self.ui.put(("info", "FlowType is paused in this app (Settings → Privacy)"))
+            return
         with self.lock:
             if self.recording:
                 return
@@ -330,10 +363,12 @@ class App:
         import textproc as tp
         tone = self.tone_setting()
         label = "Listening" + ("" if tone == "auto" else " · " + tp.TONES[tone])
-        prefix = "Hands-free · " if source == "toggle" else ""
+        prefix = {"toggle": "Hands-free · ", "meeting": "Meeting notes · "}.get(source, "")
+        if source == "meeting":
+            label = "recording - tray menu to stop"
         self.ui.put(("listening", prefix + label))
         self.set_icon(True)
-        if self.cfg.get("live_preview", True) and self.model is not None:
+        if self.cfg.get("live_preview", True) and self.model is not None and source != "meeting":
             threading.Thread(target=self.preview_loop, args=(token,), daemon=True).start()
 
     def stop_recording(self):
@@ -356,6 +391,11 @@ class App:
         audio = self.np.concatenate(frames).flatten()
         if len(audio) / SAMPLE_RATE < self.cfg["min_seconds"] or float(self.np.abs(audio).max()) < 0.004:
             self.ui.put(("hide", ""))
+            return
+        if self.rec_source == "meeting":
+            self.ui.put(("working", "Writing up your meeting notes"))
+            self.jobs.put((audio, "", "meeting"))
+            self.update_tray()
             return
         mode = "command" if self.command else "dictate"
         self.ui.put(("working", "Understanding your command" if mode == "command" else "Transcribing"))
@@ -382,12 +422,20 @@ class App:
             self.busy = True
             try:
                 t0 = time.time()
+                if mode in ("meeting", "file"):
+                    self.long_transcription(audio, mode)
+                    continue
                 raw = self.transcribe_local(audio)
                 if not raw.strip():
                     self.ui.put(("hide", ""))
                     continue
                 if mode == "command":
                     self.run_command(raw, title)
+                    continue
+                if tp.is_undo_command(raw):                   # "undo that"
+                    self.wait_for_modifiers(("windows", "left windows", "alt", "shift", "ctrl", "cmd"))
+                    self.kb.send(ps.MOD + "+z")
+                    self.ui.put(("info", "Undone"))
                     continue
                 raw, said_send = tp.split_send_command(raw)
                 tone = tp.choose_tone(self.tone_setting(), title)
@@ -402,6 +450,8 @@ class App:
                 else:
                     if self.cfg.get("cleanup") == "llm":
                         self.ui.put(("working", "Polishing"))
+                    if raw and self.cfg.get("spoken_punctuation"):
+                        raw = tp.spoken_punctuation(raw)
                     text = tp.postprocess(raw, self.cfg, title, log) if raw else ""
                     if text and self.cfg.get("grammar_check", False) and tone != "plain":
                         self.ui.put(("working", "Checking grammar"))
@@ -640,6 +690,320 @@ class App:
         except Exception as e:
             log.warning("History write failed: %s", e)
 
+
+    # ---- meeting notes & file transcription (long audio, with timestamps)
+    def meetings_dir(self):
+        d = self.cfg.get("meeting_folder") or os.path.join(os.path.expanduser("~"), "Documents", "FlowType")
+        os.makedirs(d, exist_ok=True)
+        return d
+
+    def long_transcription(self, audio, mode):
+        import textproc as tp
+        if not self.model_ready.is_set():
+            self.ui.put(("working", "Loading model"))
+        self.model_ready.wait()
+        if self.model is None:
+            raise RuntimeError("Speech model not loaded")
+        src = audio if mode == "file" else None
+        self.ui.put(("working", "Transcribing " + (os.path.basename(src) if src else "your meeting")))
+        lines, plain = [], []
+        with self.model_lock:
+            segments, info = self.model.transcribe(audio, language="en", beam_size=5, vad_filter=True)
+            for seg in segments:
+                t = int(seg.start)
+                stamp = f"{t // 3600:d}:{t // 60 % 60:02d}:{t % 60:02d}" if t >= 3600 else f"{t // 60:02d}:{t % 60:02d}"
+                text = seg.text.strip()
+                if text:
+                    lines.append(f"[{stamp}] {text}")
+                    plain.append(text)
+        if not plain:
+            self.ui.put(("error", "No speech found"))
+            return
+        transcript = "\n".join(lines)
+        now = datetime.datetime.now()
+        if mode == "file":
+            out = os.path.splitext(src)[0] + " - transcript.txt"
+            with open(out, "w", encoding="utf-8") as f:
+                f.write(transcript + "\n")
+        else:
+            summary = ""
+            if tp.llm_configured(self.cfg):
+                self.ui.put(("working", "Summarising with AI"))
+                try:
+                    summary = tp.llm_chat(tp.MEETING_SYSTEM, " ".join(plain)[:60000], self.cfg,
+                                          timeout=120, max_tokens=1500).strip()
+                except Exception as e:
+                    log.warning("Meeting summary failed: %s", e)
+            out = os.path.join(self.meetings_dir(), now.strftime("Meeting %Y-%m-%d %H-%M.md"))
+            with open(out, "w", encoding="utf-8") as f:
+                f.write(f"# Meeting notes — {now:%A %d %B %Y, %H:%M}\n\n")
+                if summary:
+                    f.write(summary + "\n\n")
+                else:
+                    f.write("_Turn on an AI in the tray menu (Command mode AI) to get a summary and action items here._\n\n")
+                f.write("## Transcript\n\n" + transcript + "\n")
+        log.info("Long transcription (%s) written to %s", mode, out)
+        self.ui.put(("info", "Saved: " + os.path.basename(out)))
+        ps.open_path(out)
+
+    def toggle_meeting(self, *_):
+        if self.recording and self.rec_source == "meeting":
+            threading.Thread(target=self.stop_recording, daemon=True).start()
+        elif not self.recording:
+            threading.Thread(target=self.start_recording, args=("meeting",), daemon=True).start()
+        self.update_tray()
+
+    def transcribe_file(self, *_):
+        self.ui.put(("pick_file", None))   # file dialog must open on the UI thread
+
+    def file_picked(self, path):
+        if path:
+            self.jobs.put((path, "", "file"))
+
+    # ---- paste last dictation again
+    def paste_last(self):
+        text = self.last_typed
+        if not text and os.path.exists(HISTORY_PATH):
+            try:
+                with open(HISTORY_PATH, "r", encoding="utf-8") as f:
+                    last = f.readlines()[-1]
+                text = json.loads(last).get("text", "")
+            except Exception:
+                text = ""
+        if text:
+            threading.Thread(target=self.type_text, args=(text,), daemon=True).start()
+        else:
+            self.ui.put(("error", "Nothing dictated yet"))
+
+    # ---- read selected text aloud
+    def read_aloud(self, *_):
+        threading.Thread(target=self._read_aloud, daemon=True).start()
+
+    def _read_aloud(self):
+        if self.tts is not None:          # pressed again while speaking -> stop
+            self.stop_speaking()
+            return
+        text = self.grab_selection().strip()
+        if not text:
+            self.ui.put(("error", "Select some text first, then press " + self.cfg.get("hotkey_read_aloud", "ctrl+alt+r").title()))
+            return
+        self.ui.put(("info", "Reading aloud - press again to stop"))
+        try:
+            import pyttsx3
+            engine = pyttsx3.init()
+            engine.setProperty("rate", int(self.cfg.get("read_aloud_rate", 185)))
+            self.tts = engine
+            engine.say(text)
+            engine.runAndWait()
+        except Exception as e:
+            log.info("pyttsx3 unavailable (%s) - using the system voice command", e)
+            import shutil
+            import subprocess
+            if ps.IS_WIN:   # Windows' built-in voice via PowerShell; the text goes in through stdin
+                proc = subprocess.Popen(
+                    ["powershell", "-NoProfile", "-Command",
+                     "Add-Type -AssemblyName System.Speech; $s=New-Object System.Speech.Synthesis.SpeechSynthesizer; "
+                     "$s.Speak([Console]::In.ReadToEnd())"],
+                    stdin=subprocess.PIPE, creationflags=0x08000000)
+                self.tts = proc
+                proc.communicate(text.encode("utf-8", "replace"))
+                return
+            cmd = ["say"] if shutil.which("say") else ["spd-say", "-w"] if shutil.which("spd-say") else \
+                ["espeak"] if shutil.which("espeak") else None
+            if cmd is None:
+                self.ui.put(("error", "No text-to-speech voice found on this computer"))
+                return
+            proc = subprocess.Popen(cmd + [text])
+            self.tts = proc
+            proc.wait()
+        finally:
+            self.tts = None
+
+    def stop_speaking(self):
+        tts, self.tts = self.tts, None
+        try:
+            (tts.terminate if hasattr(tts, "terminate") else tts.stop)()
+        except Exception:
+            pass
+
+    # ---- mouse button / foot pedal (most pedals act as a mouse button or a key)
+    def mouse_loop(self):
+        btn = (self.cfg.get("mouse_button") or "").lower().strip()
+        if not btn:
+            return
+        try:
+            from pynput import mouse
+        except Exception as e:
+            log.error("Mouse trigger needs pynput: %s", e)
+            return
+
+        def down():
+            if not self.recording:
+                threading.Thread(target=self.start_recording, args=("mouse",), daemon=True).start()
+
+        def up():
+            if self.recording and self.rec_source == "mouse":
+                threading.Thread(target=self.stop_recording, daemon=True).start()
+
+        kwargs = {}
+        if ps.IS_WIN:
+            # handle the button here and swallow it, so it doesn't also go Back/Forward in a browser
+            codes = {"middle": (0x0207, 0x0208, None), "x1": (0x020B, 0x020C, 1), "x2": (0x020B, 0x020C, 2)}
+            if btn not in codes:
+                log.error("mouse_button must be middle, x1 or x2 (got %r)", btn)
+                return
+            d_msg, u_msg, which = codes[btn]
+            holder = {}
+
+            def filt(msg, data):
+                if msg in (d_msg, u_msg) and (which is None or (data.mouseData >> 16) == which):
+                    (down if msg == d_msg else up)()
+                    holder["l"].suppress_event()
+                return True
+            kwargs["win32_event_filter"] = filt
+            listener = mouse.Listener(**kwargs)
+            holder["l"] = listener
+        else:
+            names = {"middle": "middle", "x1": "x1", "x2": "x2", "back": "x1", "forward": "x2"}
+            target = getattr(mouse.Button, names.get(btn, btn), None) or getattr(mouse.Button, "button8", None)
+
+            def on_click(x, y, button, pressed):
+                if button == target:
+                    (down if pressed else up)()
+            listener = mouse.Listener(on_click=on_click)
+        listener.start()
+        log.info("Mouse trigger on button %s", btn)
+
+    def set_mouse_button(self, btn):
+        self.cfg["mouse_button"] = btn
+        save_settings({"mouse_button": btn})
+        self.ui.put(("info", "Mouse trigger " + (btn.upper() + " - restarting" if btn else "off - restarting")))
+        threading.Thread(target=lambda: (time.sleep(1.2), self.restart()), daemon=True).start()
+
+    # ---- speed vs accuracy
+    MODELS = {"base.en": "Fast (base.en)", "small.en": "Balanced (small.en)", "large-v3-turbo": "Most accurate (large-v3-turbo)"}
+
+    def set_model(self, name):
+        if name == self.cfg.get("model"):
+            return
+
+        def run():
+            self.cfg["model"] = name
+            save_settings({"model": name})
+            self.ui.put(("working", "Switching to " + self.MODELS.get(name, name) + " (first time downloads it)"))
+            try:
+                m = load_model(self.cfg)
+                with self.model_lock:
+                    self.model = m
+                self.status = f"Ready ({getattr(m, 'flowtype_device', 'CPU')}) - {self.MODELS.get(name, name)}"
+                self.ui.put(("info", "Now using " + self.MODELS.get(name, name)))
+            except Exception as e:
+                log.error("Model switch failed: %s", e)
+                self.ui.put(("error", "Could not load that model - see log"))
+            self.update_tray()
+        threading.Thread(target=run, daemon=True).start()
+
+    # ---- grammar: off / online / fully offline
+    def set_grammar(self, mode):
+        on = mode != "off"
+        self.cfg["grammar_check"] = on
+        if on:
+            self.cfg["grammar_mode"] = mode
+        save_settings({"grammar_check": on, "grammar_mode": self.cfg.get("grammar_mode", "online")})
+        self.update_tray()
+        if mode == "offline":
+            threading.Thread(target=self.start_local_grammar, daemon=True).start()
+        else:
+            self.ui.put(("info", {"off": "Grammar check OFF", "online": "Grammar check ON (online)"}[mode]))
+
+    def grammar_state(self):
+        return self.cfg.get("grammar_mode", "online") if self.cfg.get("grammar_check") else "off"
+
+    def start_local_grammar(self):
+        from grammar_local import LocalLanguageTool
+        if self.local_lt is None:
+            self.local_lt = LocalLanguageTool(DATA_DIR, log, self.ui)
+        if self.local_lt.ensure():
+            self.ui.put(("info", "Offline grammar ready - nothing leaves your computer"))
+
+    # ---- updates
+    def check_updates(self):
+        if not self.cfg.get("check_updates", True):
+            return
+        import urllib.request
+        time.sleep(25)
+        while True:
+            try:
+                req = urllib.request.Request(f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest",
+                                             headers={"User-Agent": "FlowType", "Accept": "application/vnd.github+json"})
+                with urllib.request.urlopen(req, timeout=15) as r:
+                    rel = json.loads(r.read().decode("utf-8"))
+                latest = rel.get("tag_name", "").lstrip("vV")
+                if latest and _ver(latest) > _ver(APP_VERSION):
+                    setup = next((a["browser_download_url"] for a in rel.get("assets", [])
+                                  if a.get("name") == "FlowType-Setup.exe"), "")
+                    first = self.update_info is None
+                    self.update_info = (latest, setup, rel.get("html_url", ""))
+                    self.update_tray()
+                    if first:
+                        self.ui.put(("info", f"FlowType {latest} is available - tray menu → Update"))
+                        log.info("Update available: %s", latest)
+            except Exception as e:
+                log.info("Update check skipped: %s", e)
+            time.sleep(12 * 3600)
+
+    def install_update(self, *_):
+        if not self.update_info:
+            return
+        latest, setup, page = self.update_info
+        if not (FROZEN and ps.IS_WIN and setup):
+            ps.open_path(page or f"https://github.com/{GITHUB_REPO}/releases/latest")
+            return
+
+        def run():
+            import tempfile
+            import urllib.request
+            import subprocess
+            self.ui.put(("working", f"Downloading FlowType {latest}"))
+            try:
+                dest = os.path.join(tempfile.gettempdir(), f"FlowType-Setup-{latest}.exe")
+                urllib.request.urlretrieve(setup, dest)
+                subprocess.Popen([dest, "/SILENT", "/SUPPRESSMSGBOXES", "/NORESTART"], close_fds=True)
+                self.quit()
+            except Exception as e:
+                log.error("Update failed: %s", e)
+                self.ui.put(("error", "Update download failed - opening the release page"))
+                ps.open_path(page)
+        threading.Thread(target=run, daemon=True).start()
+
+    def restart(self, *_):
+        import subprocess
+        ps.release_instance()
+        if FROZEN:
+            subprocess.Popen([sys.executable, "--no-install"], cwd=APP_DIR, close_fds=True)
+        else:
+            subprocess.Popen([sys.executable, os.path.join(APP_DIR, "flowtype.py"), "--restarted"], cwd=APP_DIR, close_fds=True)
+        try:
+            self.icon.stop()
+        except Exception:
+            pass
+        os._exit(0)
+
+    def stats_text(self):
+        import textproc as tp
+        try:
+            return tp.stats_line(tp.compute_stats(HISTORY_PATH))
+        except Exception:
+            return "This week: -"
+
+    def open_settings(self, *_):
+        self.ui.put(("settings", None))
+
+    def show_settings(self):
+        import settings_window
+        settings_window.open_settings(self.root, self, save_settings, HISTORY_PATH,
+                                      os.path.join(APP_DIR, "PRIVACY.md"), APP_VERSION)
+
     # ---- tray
     def _icon_image(self, recording):
         from PIL import Image, ImageDraw
@@ -755,26 +1119,58 @@ class App:
             return M(self.LLM_NAMES[code], lambda *_: self.set_llm(code),
                      checked=lambda item: (self.cfg.get("llm") or {}).get("provider", "") == code, radio=True)
 
+        def model_item(name):
+            return M(self.MODELS[name], lambda *_: self.set_model(name),
+                     checked=lambda item: self.cfg.get("model") == name, radio=True)
+
+        def grammar_item(mode, label):
+            return M(label, lambda *_: self.set_grammar(mode),
+                     checked=lambda item: self.grammar_state() == mode, radio=True)
+
+        def mouse_item(btn, label):
+            return M(label, lambda *_: self.set_mouse_button(btn),
+                     checked=lambda item: (self.cfg.get("mouse_button") or "") == btn, radio=True)
+
         menu = pystray.Menu(
             M(lambda item: self.status, None, enabled=False),
+            M(lambda item: self.stats_text(), None, enabled=False),
+            M(lambda item: f"Update to FlowType {self.update_info[0]}" if self.update_info else "Up to date",
+              self.install_update, visible=lambda item: bool(self.update_info)),
             pystray.Menu.SEPARATOR,
-            M(lambda item: "Command mode AI: " + self.LLM_NAMES.get((self.cfg.get("llm") or {}).get("provider", ""), "Custom"),
-              pystray.Menu(*[llm_item(c) for c in ("", "ollama", "groq", "anthropic")])),
-            M("Live preview while talking", self.toggle_key("live_preview", "Live preview ON", "Live preview OFF"),
-              checked=lambda item: bool(self.cfg.get("live_preview", True))),
+            M("Settings…", self.open_settings, default=True),
+            M(lambda item: "Stop meeting notes" if self.recording and self.rec_source == "meeting" else "Start meeting notes",
+              self.toggle_meeting),
+            M("Transcribe an audio / video file…", self.transcribe_file),
+            M(lambda item: f"Paste last dictation ({self.cfg.get('hotkey_paste_last', 'ctrl+alt+v').title()})",
+              lambda *_: self.paste_last()),
+            M(lambda item: f"Read selection aloud ({self.cfg.get('hotkey_read_aloud', 'ctrl+alt+r').title()})", self.read_aloud),
+            pystray.Menu.SEPARATOR,
+            M(lambda item: "Speed: " + self.MODELS.get(self.cfg.get("model"), self.cfg.get("model")),
+              pystray.Menu(*[model_item(n) for n in self.MODELS])),
             M(lambda item: "Tone: " + TONES.get(self.tone_setting(), "Auto"),
               pystray.Menu(*[tone_item(t) for t in ("auto", "casual", "professional", "code", "plain")])),
-            M("Grammar check (online, via LanguageTool)", self.toggle_grammar,
-              checked=lambda item: bool(self.cfg.get("grammar_check", False))),
+            M(lambda item: "Grammar: " + {"off": "Off", "online": "Online", "offline": "Offline"}[self.grammar_state()],
+              pystray.Menu(grammar_item("off", "Off"), grammar_item("online", "Online (LanguageTool)"),
+                           grammar_item("offline", "Offline (on this computer, needs Java)"))),
+            M(lambda item: "Command mode AI: " + self.LLM_NAMES.get((self.cfg.get("llm") or {}).get("provider", ""), "Custom"),
+              pystray.Menu(*[llm_item(c) for c in ("", "ollama", "groq", "anthropic")])),
+            M("Mouse / foot-pedal trigger", pystray.Menu(
+                mouse_item("", "Off"), mouse_item("middle", "Middle button (hold)"),
+                mouse_item("x1", "Back side button (hold)"), mouse_item("x2", "Forward side button (hold)"))),
+            M("Spoken punctuation (say \"comma\", \"new line\")",
+              self.toggle_key("spoken_punctuation", "Spoken punctuation ON", "Spoken punctuation OFF"),
+              checked=lambda item: bool(self.cfg.get("spoken_punctuation"))),
+            M("Live preview while talking", self.toggle_key("live_preview", "Live preview ON", "Live preview OFF"),
+              checked=lambda item: bool(self.cfg.get("live_preview", True))),
             M("Email formatting in Gmail / Outlook", self.toggle_email,
               checked=lambda item: bool(self.cfg.get("email_format", True))),
             M("Auto-send (press Enter after each message)", self.toggle_auto_send,
               checked=lambda item: bool(self.cfg.get("auto_send"))),
             pystray.Menu.SEPARATOR,
-            M("Edit snippets, words & settings", lambda *_: ps.open_path(CONFIG_PATH)),
-            M("Reload settings", self.reload_config),
+            M("Open meeting notes folder", lambda *_: ps.open_path(self.meetings_dir())),
             M("Open history", lambda *_: os.path.exists(HISTORY_PATH) and ps.open_path(HISTORY_PATH)),
             M("Open log", lambda *_: ps.open_path(LOG_PATH)),
+            M("Restart FlowType", self.restart),
             pystray.Menu.SEPARATOR,
             M("Quit", self.quit),
         )
@@ -782,6 +1178,9 @@ class App:
         self.icon.run_detached()
 
     def quit(self, *_):
+        self.stop_speaking()
+        if self.local_lt is not None:
+            self.local_lt.stop()
         try:
             self.icon.stop()
         except Exception:
@@ -800,6 +1199,10 @@ class App:
         threading.Thread(target=self.worker, daemon=True).start()
         threading.Thread(target=self.hold_loop, daemon=True).start()
         threading.Thread(target=self.watch_for_updates, daemon=True).start()
+        threading.Thread(target=self.check_updates, daemon=True).start()
+        threading.Thread(target=self.mouse_loop, daemon=True).start()
+        if self.cfg.get("grammar_check") and self.cfg.get("grammar_mode") == "offline":
+            threading.Thread(target=self.start_local_grammar, daemon=True).start()
         try:
             self.kb.add_hotkey(self.cfg["hotkey_toggle"], self.toggle)
         except Exception as e:
@@ -808,6 +1211,13 @@ class App:
             self.kb.add_hotkey(self.cfg.get("hotkey_learn", "ctrl+alt+d"), self.learn_selected)
         except Exception as e:
             log.error("Learn hotkey not registered: %s", e)
+        for key, default, fn in (("hotkey_paste_last", "ctrl+alt+v", self.paste_last),
+                                 ("hotkey_read_aloud", "ctrl+alt+r", self.read_aloud)):
+            try:
+                if self.cfg.get(key, default):
+                    self.kb.add_hotkey(self.cfg.get(key, default), fn)
+            except Exception as e:
+                log.error("Hotkey %s not registered: %s", key, e)
         self.kb.hook(self._on_key)
         self.start_tray()
         log.info("FlowType started")
@@ -900,11 +1310,15 @@ def selftest(out_path):
             lines.append("audio: not available here (%s)" % str(e).split(":")[0])
         if ps.IS_WIN:
             import keyboard  # noqa: F401
-        else:
-            import pynput  # noqa: F401
         lines.append("platform: " + ps.PLATFORM)
         from PIL import Image  # noqa: F401
-        import textproc, overlay  # noqa: F401
+        import textproc, overlay, settings_window, grammar_local  # noqa: F401
+        import pynput  # noqa: F401  (mouse / foot-pedal trigger)
+        try:
+            import pyttsx3  # noqa: F401
+            lines.append("tts ok")
+        except Exception as e:
+            lines.append("tts: not available here (%s)" % e)
         lines.append("imports ok")
         cfg = load_config()
         m = load_model(cfg)

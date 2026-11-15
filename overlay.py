@@ -302,6 +302,21 @@ class Overlay:
                     finally:
                         w.destroy()
                     continue
+                if state == "settings":
+                    try:
+                        self.app.show_settings()
+                    except Exception as e:
+                        import logging
+                        logging.getLogger("FlowType").error("Settings window failed: %s", e, exc_info=True)
+                    continue
+                if state == "pick_file":
+                    from tkinter import filedialog
+                    path = filedialog.askopenfilename(
+                        parent=self.root, title="Choose a recording to transcribe",
+                        filetypes=[("Audio / video", "*.mp3 *.m4a *.wav *.ogg *.flac *.aac *.opus *.webm *.mp4 *.mkv *.mov *.avi"),
+                                   ("All files", "*.*")])
+                    self.app.file_picked(path)
+                    continue
                 if state == "hide":
                     self.state = "hide"
                     continue

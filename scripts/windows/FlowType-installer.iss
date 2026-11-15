@@ -49,6 +49,8 @@ Name: "{userstartup}\FlowType"; Filename: "{app}\FlowType.exe"; Tasks: startup
 
 [Run]
 Filename: "{app}\FlowType.exe"; Description: "Start FlowType now"; Flags: nowait postinstall skipifsilent
+; after an in-app update (silent install) start FlowType again
+Filename: "{app}\FlowType.exe"; Flags: nowait runasoriginaluser; Check: WizardSilent
 
 [UninstallRun]
 Filename: "{sys}\taskkill.exe"; Parameters: "/f /im FlowType.exe"; Flags: runhidden; RunOnceId: "StopFlowType"
