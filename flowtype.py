@@ -190,7 +190,11 @@ class App:
     def __init__(self):
         import numpy as np
         import pyperclip
-        import sounddevice as sd
+        try:
+            import sounddevice as sd
+        except Exception as e:  # no audio system (e.g. a server without sound) - start anyway
+            log.error("Audio system not available: %s", e)
+            sd = None
         self.kb, self.np, self.pc, self.sd = ps.make_keys(), np, pyperclip, sd
 
         self.cfg = load_config()
@@ -300,6 +304,9 @@ class App:
             if self.recording:
                 return
             self.frames = []
+            if self.sd is None:
+                self.ui.put(("error", "No microphone / audio system found"))
+                return
             try:
                 self.stream = self.sd.InputStream(
                     samplerate=SAMPLE_RATE, channels=1, dtype="float32",
@@ -1094,7 +1101,12 @@ def selftest(out_path):
     lines = []
     try:
         import numpy as np
-        import pyperclip, pystray, sounddevice, tkinter  # noqa: F401
+        import pyperclip, pystray, tkinter  # noqa: F401
+        try:
+            import sounddevice  # noqa: F401
+            lines.append("audio ok")
+        except Exception as e:  # e.g. CI machines without a sound server
+            lines.append("audio: not available here (%s)" % str(e).split(":")[0])
         if ps.IS_WIN:
             import keyboard  # noqa: F401
         else:
