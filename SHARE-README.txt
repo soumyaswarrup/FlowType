@@ -24,7 +24,7 @@ MORE TRICKS
   (Needs an AI: purple mic -> Command mode AI -> Ollama / Groq / Claude.)
 - Snippets: say "insert my signature" (edit them via purple mic -> Edit snippets).
 - Wrong word? Fix it, select it, press Ctrl + Alt + D - FlowType learns it.
-- In WhatsApp it writes casually, in VS Code it understands "dot", "dash", "slash".
+- Tone: purple mic -> Tone -> Auto / Casual / Professional / Code / As spoken.
 
 GRAMMAR & EMAILS
 - Grammar is checked automatically (LanguageTool, free). Sure fixes are applied;

@@ -77,11 +77,18 @@ Say **"insert my signature"** (or "paste my email address", etc.) and saved text
 If a name or term comes out wrong (e.g. *seem* instead of **SIEM**), fix it in the text, **select the correct word** and press **`Ctrl + Alt + D`**.
 FlowType remembers the spelling and auto-corrects it from then on ("Learned: seem → SIEM"). Selecting any word and pressing `Ctrl + Alt + D` also adds it to your vocabulary, which helps recognition.
 
-### 4. Tone matched to the app
-- **Chat apps** (WhatsApp, Slack, Teams, Telegram…): casual, with no stiff full stop on one-line messages.
-- **Email** (Gmail, Outlook): greeting, paragraphs, numbered lists, sign-off on its own lines.
-- **Code editors & terminals** (VS Code, PyCharm, PowerShell…): no auto-capitals or full stops, and spoken symbols become symbols. *"git commit dash m fix bug"* → `git commit -m fix bug`, *"main dot py"* → `main.py`, *"open paren"* → `(`.
-- **Docs** (Word, Google Docs, Notion, Obsidian): full grammar check.
+### 4. Choose your tone
+Right-click the purple mic → **Tone** and pick how you want to sound. Everything you dictate is written that way:
+
+| Tone | What you get | Example: *"hey I'm gonna send u the report asap, thanks"* |
+|---|---|---|
+| **Auto** (default) | Matches the app: casual in chats, professional in email & docs, code in editors | depends on the app |
+| **Casual** | Contractions, relaxed, no stiff full stop | Hey I'm gonna send u the report asap, thanks |
+| **Professional** | No slang or contractions, full sentences | Hello, I am going to send you the report as soon as possible, thank you. |
+| **Code** | No capitals/full stops; *"dot"*, *"dash dash"*, *"slash"*, *"open paren"* become symbols | *"python main dot py dash dash help"* → `python main.py --help` |
+| **As spoken** | Just your words cleaned of um/uh, no grammar changes | Hey I'm gonna send u the report asap, thanks. |
+
+The pill shows your current tone while you talk (e.g. "Listening · Professional"). Email layout in Gmail/Outlook still applies in any tone.
 
 ### 5. Uses your NVIDIA GPU automatically
 If your PC has an NVIDIA graphics card, FlowType uses it and text appears several times faster. Running from source? Double-click **`enable-gpu.bat`** once to install the GPU libraries. The tray menu shows **Ready (GPU)** or **Ready (CPU)**.
@@ -93,7 +100,7 @@ While you hold the key, the words you're saying appear in the on-screen pill as 
 Clear mistakes are fixed before typing (*"I has completed"* → *"I have completed"*). When there's more than one possible fix, a small popup suggests it instead of guessing. Uses the free [LanguageTool](https://languagetool.org) service, so the **dictated text is sent to LanguageTool** for checking. You can turn it off in the tray menu.
 
 ### ⚙️ Settings
-Click the **^** arrow next to the clock → **right-click the purple mic**: command mode AI, live preview, tone per app, grammar check, email formatting, auto-send, snippets & words, history, quit.
+Click the **^** arrow next to the clock → **right-click the purple mic**: command mode AI, tone, live preview, grammar check, email formatting, auto-send, snippets & words, history, quit.
 
 ## 🛠️ For developers
 Python app (`flowtype.py` = tray app, hotkeys, recording, overlay, command mode; `textproc.py` = clean-up, "send it", grammar, email layout, snippets, tone per app, AI calls).

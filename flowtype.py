@@ -49,7 +49,7 @@ DEFAULT_CONFIG = {
     },
     "hotkey_learn": "ctrl+alt+d",
     "command_mode": True,
-    "tone_by_app": True,
+    "tone": "auto",               # auto | casual | professional | code | plain (tray -> Tone)
     "live_preview": True,
     "snippets": {
         "signature": "Best regards,\nYour Name",
@@ -372,7 +372,9 @@ class App:
             self.rec_token += 1
             token = self.rec_token
         self.beep(880)
-        label = "Listening"
+        import textproc as tp
+        tone = self.tone_setting()
+        label = "Listening" + ("" if tone == "auto" else " · " + tp.TONES[tone])
         prefix = "Hands-free · " if source == "toggle" else ""
         self.ui.put(("listening", prefix + label))
         self.set_icon(True)
@@ -433,33 +435,36 @@ class App:
                     self.run_command(raw, title)
                     continue
                 raw, said_send = tp.split_send_command(raw)
-                kind = tp.app_kind(title) if self.cfg.get("tone_by_app", True) else "other"
+                tone = tp.choose_tone(self.tone_setting(), title)
+                kind = tone  # kept for the log line
                 email = self.cfg.get("email_format", True) and tp.is_email_window(title)
                 fixes, sugg = [], []
                 snippet = tp.find_snippet(raw, self.cfg.get("snippets")) if raw else None
                 if snippet is not None:                       # "insert my signature"
                     text = snippet
-                elif kind == "code":                          # editors / terminals
+                elif tone == "code":                          # code tone: symbols, no capitals / full stops
                     text = tp.code_format(tp.FILLER_RE.sub(" ", tp.apply_replacements(raw, self.cfg.get("replacements"))))
                 else:
                     if self.cfg.get("cleanup") == "llm":
                         self.ui.put(("working", "Polishing"))
                     text = tp.postprocess(raw, self.cfg, title, log) if raw else ""
-                    if text and self.cfg.get("grammar_check", True):
+                    if text and self.cfg.get("grammar_check", True) and tone != "plain":
                         self.ui.put(("working", "Checking grammar"))
                         try:
                             text, fixes, sugg = tp.grammar_fix(text, self.cfg)
                         except Exception as e:  # offline / LanguageTool busy -> type it as is
                             log.warning("Grammar check skipped: %s", e)
+                    if text and tone == "professional":
+                        text = tp.professional_style(text)
+                    elif text and tone == "casual" and not email:
+                        text = tp.casual_style(text)
                     if text and email:
                         text = tp.format_email(text)
-                    elif text and kind == "chat":
-                        text = tp.chat_style(text)
-                log.info("Transcribed %.1fs audio in %.1fs (app=%s, snippet=%s, fixes=%d, suggestions=%d)",
+                log.info("Transcribed %.1fs audio in %.1fs (tone=%s, snippet=%s, fixes=%d, suggestions=%d)",
                          len(audio) / SAMPLE_RATE, time.time() - t0, kind, snippet is not None, len(fixes), len(sugg))
                 press_enter = said_send or (self.cfg.get("auto_send") and bool(text) and not email)
                 if text:
-                    self.type_text(text, sending=press_enter or kind == "code")
+                    self.type_text(text, sending=press_enter or tone == "code")
                     self.last_typed = text
                     self.save_history(raw, text, title, len(audio) / SAMPLE_RATE)
                 if press_enter:
@@ -754,6 +759,20 @@ class App:
             self.ui.put(("info", msg))
         threading.Thread(target=run, daemon=True).start()
 
+    def tone_setting(self):
+        t = self.cfg.get("tone")
+        if not t:  # older settings files
+            t = "auto" if self.cfg.get("tone_by_app", True) else "plain"
+        return t
+
+    def set_tone(self, tone):
+        import textproc as tp
+        self.cfg["tone"] = tone
+        save_settings({"tone": tone})
+        self.update_tray()
+        self.ui.put(("info", "Tone: " + tp.TONES[tone] + (" - casual in chats, code in editors, formal in email"
+                                                            if tone == "auto" else " everywhere")))
+
     def toggle_key(self, key, on_msg, off_msg):
         def f(*_):
             self.cfg[key] = not self.cfg.get(key, True)
@@ -764,6 +783,12 @@ class App:
     def start_tray(self):
         import pystray
         M = pystray.MenuItem
+
+        from textproc import TONES
+
+        def tone_item(t):
+            return M(TONES[t], lambda *_: self.set_tone(t),
+                     checked=lambda item: self.tone_setting() == t, radio=True)
 
         def llm_item(code):
             return M(self.LLM_NAMES[code], lambda *_: self.set_llm(code),
@@ -776,8 +801,8 @@ class App:
               pystray.Menu(*[llm_item(c) for c in ("", "ollama", "groq", "anthropic")])),
             M("Live preview while talking", self.toggle_key("live_preview", "Live preview ON", "Live preview OFF"),
               checked=lambda item: bool(self.cfg.get("live_preview", True))),
-            M("Match tone to the app (chat / code / email)", self.toggle_key("tone_by_app", "Tone per app ON", "Tone per app OFF"),
-              checked=lambda item: bool(self.cfg.get("tone_by_app", True))),
+            M(lambda item: "Tone: " + TONES.get(self.tone_setting(), "Auto"),
+              pystray.Menu(*[tone_item(t) for t in ("auto", "casual", "professional", "code", "plain")])),
             M("Grammar check (fix + suggest)", self.toggle_grammar,
               checked=lambda item: bool(self.cfg.get("grammar_check", True))),
             M("Email formatting in Gmail / Outlook", self.toggle_email,

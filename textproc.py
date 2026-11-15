@@ -467,3 +467,64 @@ def code_format(text):
             return left + sym + right
         t = re.sub(pat, sub, t)
     return re.sub(r"[ ]{2,}", " ", t).strip()
+
+
+# ---------------------------------------------------------------- tone chosen by the user
+TONES = {
+    "auto": "Auto (match the app)",
+    "casual": "Casual",
+    "professional": "Professional",
+    "code": "Code",
+    "plain": "As spoken",
+}
+
+_PRO_WORDS = [  # casual -> professional
+    (r"\bgonna\b", "going to"), (r"\bwanna\b", "want to"), (r"\bgotta\b", "have to"), (r"\bkinda\b", "somewhat"),
+    (r"\bsorta\b", "somewhat"), (r"\byeah\b|\byep\b|\byup\b", "yes"), (r"\bnope\b", "no"), (r"\bok\b|\bokay\b", "okay"),
+    (r"\bthanks a lot\b", "thank you very much"), (r"\bthx\b|\bthanks\b", "thank you"), (r"\bu\b", "you"),
+    (r"\bur\b", "your"), (r"\bpls\b|\bplz\b", "please"), (r"\basap\b", "as soon as possible"),
+    (r"\bhey\b", "hello"), (r"\bbtw\b", "by the way"), (r"\bfyi\b", "for your information"),
+    (r"\bcan't\b", "cannot"), (r"\bwon't\b", "will not"), (r"\bdon't\b", "do not"), (r"\bdoesn't\b", "does not"),
+    (r"\bdidn't\b", "did not"), (r"\bisn't\b", "is not"), (r"\baren't\b", "are not"), (r"\bwasn't\b", "was not"),
+    (r"\bweren't\b", "were not"), (r"\bhaven't\b", "have not"), (r"\bhasn't\b", "has not"), (r"\bshouldn't\b", "should not"),
+    (r"\bwouldn't\b", "would not"), (r"\bcouldn't\b", "could not"), (r"\bI'm\b", "I am"), (r"\bI've\b", "I have"),
+    (r"\bI'll\b", "I will"), (r"\bI'd\b", "I would"), (r"\bwe're\b", "we are"), (r"\bwe'll\b", "we will"),
+    (r"\bthey're\b", "they are"), (r"\byou're\b", "you are"), (r"\bit's\b", "it is"), (r"\bthat's\b", "that is"),
+    (r"\blet's\b", "let us"),
+]
+_CASUAL_WORDS = [  # formal -> casual (contractions)
+    (r"\bI am\b", "I'm"), (r"\bI will\b", "I'll"), (r"\bI have\b(?! to)", "I've"), (r"\bdo not\b", "don't"),
+    (r"\bdoes not\b", "doesn't"), (r"\bdid not\b", "didn't"), (r"\bcannot\b", "can't"), (r"\bwill not\b", "won't"),
+    (r"\bis not\b", "isn't"), (r"\bare not\b", "aren't"), (r"\bit is\b", "it's"), (r"\bthat is\b", "that's"),
+    (r"\bwe are\b", "we're"), (r"\byou are\b", "you're"), (r"\bthey are\b", "they're"), (r"\blet us\b", "let's"),
+]
+
+
+def _swap(text, pairs):
+    for pat, rep in pairs:
+        def keep_case(m, rep=rep):
+            w = m.group(0)
+            return rep[:1].upper() + rep[1:] if w[:1].isupper() else rep
+        text = re.sub("(?i)" + pat, keep_case, text)
+    return text
+
+
+def professional_style(text):
+    """Full sentences, no slang or contractions, proper capitals and full stop."""
+    t = _swap(text.strip(), _PRO_WORDS)
+    t = re.sub(r"(?<![.!?])\s*$", ".", t) if t and t[-1] not in ".!?:\n" else t
+    t = re.sub(r"^(Hello|Hi|Yes|No|Okay|Sure)\s+(?=[A-Za-z])", r"\1, ", t)  # "Hello I am" -> "Hello, I am"
+    return tidy(t)
+
+
+def casual_style(text):
+    """Contractions and no stiff full stop on a one-line message."""
+    return chat_style(_swap(text.strip(), _CASUAL_WORDS))
+
+
+def choose_tone(setting, title):
+    """The tone to write in: the one you picked, or (Auto) one that matches the app."""
+    if setting and setting != "auto":
+        return setting
+    kind = app_kind(title)
+    return {"chat": "casual", "code": "code", "email": "professional", "doc": "professional"}.get(kind, "plain")
