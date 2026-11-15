@@ -81,18 +81,21 @@ def _post_json(url, headers, body, timeout):
         return json.loads(resp.read().decode("utf-8"))
 
 
-def llm_cleanup(text, cfg, window_title=""):
-    """Returns cleaned text, or raises on any failure (caller falls back to basic)."""
+def llm_configured(cfg):
+    llm = cfg.get("llm", {})
+    if llm.get("provider") == "anthropic":
+        return bool(llm.get("api_key") or os.environ.get("ANTHROPIC_API_KEY"))
+    if llm.get("provider") in ("openai", "groq", "ollama"):
+        return bool(llm.get("base_url") and llm.get("model"))
+    return False
+
+
+def llm_chat(system, user, cfg, timeout=None, max_tokens=2048):
+    """One request to the configured AI (Anthropic, or any OpenAI-compatible server:
+    Groq, OpenAI, Ollama, LM Studio). Raises on failure."""
     llm = cfg.get("llm", {})
     provider = llm.get("provider", "anthropic")
-    timeout = float(llm.get("timeout_seconds", 8))
-    system = LLM_SYSTEM.format(dictionary=", ".join(cfg.get("dictionary") or []) or "(none)")
-    user = text
-    if window_title and llm.get("send_window_title", True):
-        user = f"App: {window_title}\n\nDictation:\n{text}"
-    else:
-        user = f"Dictation:\n{text}"
-
+    timeout = float(timeout or llm.get("timeout_seconds", 20))
     if provider == "anthropic":
         key = llm.get("api_key") or os.environ.get("ANTHROPIC_API_KEY", "")
         if not key:
@@ -100,12 +103,12 @@ def llm_cleanup(text, cfg, window_title=""):
         data = _post_json(
             "https://api.anthropic.com/v1/messages",
             {"x-api-key": key, "anthropic-version": "2023-06-01", "content-type": "application/json"},
-            {"model": llm.get("model", "claude-haiku-5-5"), "max_tokens": 2048, "system": system,
+            {"model": llm.get("model", "claude-haiku-5-5"), "max_tokens": max_tokens, "system": system,
              "messages": [{"role": "user", "content": user}]},
             timeout,
         )
         out = "".join(b.get("text", "") for b in data.get("content", []) if b.get("type") == "text")
-    else:  # any OpenAI-compatible endpoint: Groq, OpenAI, Ollama, LM Studio...
+    else:
         key = llm.get("api_key") or os.environ.get("OPENAI_API_KEY", "")
         base = llm.get("base_url", "https://api.groq.com/openai/v1").rstrip("/")
         headers = {"content-type": "application/json"}
@@ -113,15 +116,51 @@ def llm_cleanup(text, cfg, window_title=""):
             headers["authorization"] = f"Bearer {key}"
         data = _post_json(
             base + "/chat/completions", headers,
-            {"model": llm.get("model"), "temperature": 0.2,
+            {"model": llm.get("model"), "temperature": 0.3, "max_tokens": max_tokens,
              "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}]},
             timeout,
         )
         out = data["choices"][0]["message"]["content"]
-    out = out.strip()
+    out = re.sub(r"(?s)<think>.*?</think>", "", out or "").strip()  # some local models think out loud
     if not out:
-        raise RuntimeError("Empty LLM response")
-    return apply_replacements(out, cfg.get("replacements"))
+        raise RuntimeError("Empty AI response")
+    return out
+
+
+def llm_cleanup(text, cfg, window_title=""):
+    """Returns cleaned text, or raises on any failure (caller falls back to basic)."""
+    llm = cfg.get("llm", {})
+    system = LLM_SYSTEM.format(dictionary=", ".join(cfg.get("dictionary") or []) or "(none)")
+    if window_title and llm.get("send_window_title", True):
+        user = f"App: {window_title}\n\nDictation:\n{text}"
+    else:
+        user = f"Dictation:\n{text}"
+    return apply_replacements(llm_chat(system, user, cfg, timeout=llm.get("timeout_seconds", 8)),
+                              cfg.get("replacements"))
+
+
+# ---------------------------------------------------------------- command mode
+COMMAND_SYSTEM = """You are the "command mode" of a voice typing app. The user spoke an instruction.
+If SELECTED TEXT is given, apply the instruction to it (rewrite, shorten, make formal, translate, fix,
+turn into bullet points, reply to it, etc.) and return ONLY the new text that should replace the selection.
+If there is no selected text, write what the instruction asks for (an email, a message, a paragraph...)
+and return ONLY that text.
+Rules: no preamble, no quotes around the result, no explanations, no markdown code fences unless the
+result is code. Keep the language of the selected text unless asked otherwise. Match the style of the
+app the user is in: {app}.
+Spell these terms exactly: {dictionary}"""
+
+
+def llm_command(instruction, selection, cfg, app_title=""):
+    system = COMMAND_SYSTEM.format(app=app_title or "unknown",
+                                   dictionary=", ".join(cfg.get("dictionary") or []) or "(none)")
+    if selection.strip():
+        user = f"INSTRUCTION: {instruction}\n\nSELECTED TEXT:\n{selection}"
+    else:
+        user = f"INSTRUCTION: {instruction}\n\n(no text selected)"
+    out = llm_chat(system, user, cfg, max_tokens=3000)
+    out = re.sub(r"^```[a-zA-Z]*\n|\n```$", "", out.strip()) if not selection.lstrip().startswith("```") else out
+    return out.strip()
 
 
 def postprocess(raw, cfg, window_title="", log=None):
@@ -317,3 +356,114 @@ def format_email(text):
                 paragraphs.append(made[0])
     parts = ([greeting] if greeting else []) + paragraphs + ([signoff] if signoff else [])
     return "\n\n".join(p for p in parts if p.strip())
+
+
+# ---------------------------------------------------------------- snippets
+SNIPPET_RE = re.compile(r"(?i)^\s*(?:please\s+)?(?:insert|paste|type|add|put|snippet)\s+(?:in\s+)?(?:my\s+|the\s+|our\s+)?(.+?)[\s.!]*$")
+
+
+def _norm(s):
+    return re.sub(r"[^a-z0-9 ]+", "", re.sub(r"^(?:my|the|our)\s+", "", s.lower().strip())).strip()
+
+
+def find_snippet(raw, snippets):
+    """'Insert my signature' -> the saved 'signature' text, else None."""
+    import difflib
+    if not snippets:
+        return None
+    m = SNIPPET_RE.match(raw or "")
+    if not m:
+        return None
+    said = _norm(m.group(1))
+    keys = {_norm(k): v for k, v in snippets.items()}
+    if said in keys:
+        return keys[said]
+    close = difflib.get_close_matches(said, list(keys), n=1, cutoff=0.75)
+    return keys[close[0]] if close else None
+
+
+# ---------------------------------------------------------------- learning words
+def learn_correction(selected, last_text):
+    """User selected their corrected word right after a dictation. Find which word(s) it fixes,
+    e.g. selected 'WhizHack' and the last dictation said 'Whiz hack'.
+    Returns (wrong_text_or_None, right_text)."""
+    import difflib
+    right = selected.strip().strip(".,!?;:")
+    if not right or len(right) > 60:
+        return None, right
+    squash = lambda x: re.sub(r"[\s'-]+", "", x.lower())
+    words = re.findall(r"[\w'-]+", last_text or "")
+    best, best_score = None, 0.0
+    for n in (1, 2, 3):
+        for k in range(len(words) - n + 1):
+            cand = " ".join(words[k:k + n])
+            if squash(cand) == squash(right) and cand == right:
+                continue
+            score = difflib.SequenceMatcher(None, squash(cand), squash(right)).ratio()
+            if score > best_score:
+                best, best_score = cand, score
+    if best is None or best_score < 0.6 or best == right:
+        return None, right
+    return best, right
+
+
+# ---------------------------------------------------------------- tone per app
+APP_KINDS = [
+    ("email", EMAIL_TITLES),
+    ("chat", ("whatsapp", "telegram", "slack", "microsoft teams", "| teams", "discord", "messenger",
+              "instagram", "signal", "google chat", "skype", "linkedin messaging", "messages")),
+    ("code", ("visual studio code", "- vs code", "pycharm", "intellij", "webstorm", "android studio",
+              "sublime text", "notepad++", "cursor", "windows powershell", "command prompt", "terminal",
+              "cmd.exe", "git bash", "vim", "jupyter")),
+    ("doc", ("word", "google docs", "- docs", "notion", "obsidian", "onenote", "confluence", "evernote")),
+]
+
+
+def app_kind(title):
+    t = (title or "").lower()
+    for kind, keys in APP_KINDS:
+        if any(k in t for k in keys):
+            return kind
+    return "other"
+
+
+def chat_style(text):
+    """Chats: a single short sentence doesn't need a full stop (how people actually text)."""
+    t = text.strip()
+    if "\n" not in t and t.endswith(".") and not t.endswith("..") and len(re.findall(r"[.!?]", t)) == 1 and len(t) < 160:
+        t = t[:-1]
+    return t
+
+
+CODE_WORDS = [  # spoken -> symbol, how it joins: L = glue to left word, R = glue to right word
+    (r"open (?:paren|parenthesis|bracket round)", "(", "LR"), (r"close (?:paren|parenthesis)", ")", "L"),
+    (r"open (?:square )?bracket", "[", "R"), (r"close (?:square )?bracket", "]", "L"),
+    (r"open (?:curly )?brace", "{", "R"), (r"close (?:curly )?brace", "}", "L"),
+    (r"double dash|dash dash", "--", "R"), (r"double equals?", "==", ""), (r"not equals?", "!=", ""),
+    (r"arrow", "->", ""), (r"fat arrow", "=>", ""), (r"underscore", "_", "LR"), (r"dash|hyphen", "-", "R"),
+    (r"dot", ".", "LR"), (r"comma", ",", "L"), (r"semicolon", ";", "L"), (r"colon", ":", "L"),
+    (r"equals?", "=", ""), (r"plus", "+", ""), (r"star|asterisk", "*", ""), (r"backslash", "\\", "LR"),
+    (r"forward slash|slash", "/", "LR"), (r"pipe", "|", ""), (r"ampersand", "&", ""),
+    (r"double quote|quote", '"', ""), (r"single quote|apostrophe", "'", ""), (r"hash|hashtag", "#", "R"),
+    (r"at sign", "@", "LR"), (r"dollar(?: sign)?", "$", "R"), (r"percent", "%", "L"), (r"tilde", "~", "R"),
+    (r"less than", "<", ""), (r"greater than", ">", ""), (r"new line", "\n", "LR"), (r"tab key", "\t", "LR"),
+]
+
+
+def code_format(text):
+    """Code editors / terminals: no auto-capitalising or full stops, spoken symbols become symbols.
+    'git commit dash m fix bug' -> 'git commit -m fix bug'; 'main dot py' -> 'main.py'."""
+    t = text.strip()
+    t = re.sub(r"[.!]$", "", t)
+    # Whisper's own commas/periods aren't code
+    t = re.sub(r"(?<=\w)[,.](?=\s)", "", t)
+    if len(t) > 1 and t[0].isupper() and not t[:2].isupper():
+        t = t[0].lower() + t[1:]
+    for spoken, sym, glue in CODE_WORDS:
+        pat = r"(?i)(\s*)\b(?:%s)\b(\s*)" % spoken
+        def sub(m, sym=sym, glue=glue):
+            left = "" if "L" in glue else (m.group(1) and " ")
+            right = "" if "R" in glue else (m.group(2) and " ")
+            return left + sym + right
+        t = re.sub(pat, sub, t)
+    return re.sub(r"[ ]{2,}", " ", t).strip()

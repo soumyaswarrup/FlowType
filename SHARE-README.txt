@@ -19,6 +19,13 @@ USE
   It types the message and presses Enter.
   Or turn on purple mic -> "Auto-send" to send every message automatically.
 
+MORE TRICKS
+- Command mode: select text, HOLD Ctrl + Alt + Shift, say "make this more formal".
+  (Needs an AI: purple mic -> Command mode AI -> Ollama / Groq / Claude.)
+- Snippets: say "insert my signature" (edit them via purple mic -> Edit snippets).
+- Wrong word? Fix it, select it, press Ctrl + Alt + D - FlowType learns it.
+- In WhatsApp it writes casually, in VS Code it understands "dot", "dash", "slash".
+
 GRAMMAR & EMAILS
 - Grammar is checked automatically (LanguageTool, free). Sure fixes are applied;
   unsure ones appear as a "Check:" suggestion at the bottom of the screen.

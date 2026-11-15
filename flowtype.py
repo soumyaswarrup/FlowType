@@ -32,20 +32,28 @@ DEFAULT_CONFIG = {
     "hotkey_hold": "ctrl+alt",
     "hotkey_toggle": "ctrl+shift+space",
     "model": "small.en",
-    "device": "cpu",
-    "compute_type": "int8",
+    "device": "auto",            # auto = use an NVIDIA GPU if one is set up, else CPU
+    "compute_type": "auto",
     "grammar_check": True,
     "grammar_language": "en-US",
     "email_format": True,
     "input_device": None,
     "cleanup": "basic",
-    "llm": {
-        "provider": "anthropic",
-        "model": "claude-haiku-5-5",
+    "llm": {                      # the AI used by command mode (tray -> Command mode AI)
+        "provider": "",
+        "model": "",
         "api_key": "",
-        "base_url": "https://api.groq.com/openai/v1",
-        "timeout_seconds": 8,
+        "base_url": "",
+        "timeout_seconds": 25,
         "send_window_title": True,
+    },
+    "hotkey_learn": "ctrl+alt+d",
+    "command_mode": True,
+    "tone_by_app": True,
+    "live_preview": True,
+    "snippets": {
+        "signature": "Best regards,\nYour Name",
+        "email address": "you@example.com",
     },
     "dictionary": [],
     "replacements": {},
@@ -177,16 +185,49 @@ def single_instance():
     return False
 
 
+def add_cuda_dll_dirs():
+    """Make pip-installed NVIDIA libraries (enable-gpu.bat) visible to ctranslate2 on Windows."""
+    if os.name != "nt":
+        return
+    import site
+    roots = list(getattr(site, "getsitepackages", lambda: [])()) + [os.path.join(sys.prefix, "Lib", "site-packages")]
+    for root in roots:
+        nv = os.path.join(root, "nvidia")
+        if not os.path.isdir(nv):
+            continue
+        for sub in os.listdir(nv):
+            b = os.path.join(nv, sub, "bin")
+            if os.path.isdir(b):
+                try:
+                    os.add_dll_directory(b)
+                except Exception:
+                    pass
+                os.environ["PATH"] = b + os.pathsep + os.environ.get("PATH", "")
+
+
 def load_model(cfg):
+    """Uses an NVIDIA GPU when one works (much faster), otherwise the CPU."""
     from faster_whisper import WhisperModel
-    device, ctype = cfg["device"], cfg["compute_type"]
-    try:
-        return WhisperModel(cfg["model"], device=device, compute_type=ctype)
-    except Exception as e:
-        if device != "cpu":
-            log.warning("Model load on %s failed (%s); falling back to CPU int8", device, e)
-            return WhisperModel(cfg["model"], device="cpu", compute_type="int8")
-        raise
+    import numpy as np
+    device, ctype = cfg.get("device", "auto"), cfg.get("compute_type", "auto")
+    if device in ("auto", "cuda"):
+        try:
+            import ctranslate2
+            add_cuda_dll_dirs()
+            if ctranslate2.get_cuda_device_count() > 0:
+                m = WhisperModel(cfg["model"], device="cuda",
+                                 compute_type="float16" if ctype == "auto" else ctype)
+                segs, _ = m.transcribe(np.zeros(16000, dtype="float32"), language="en")
+                list(segs)  # make sure the GPU libraries really work
+                m.flowtype_device = "GPU"
+                log.info("Speech model running on the NVIDIA GPU")
+                return m
+        except Exception as e:
+            log.warning("GPU not usable (%s) - using CPU", e)
+    m = WhisperModel(cfg["model"], device="cpu",
+                     compute_type="int8" if ctype in ("auto", "float16") else ctype)
+    m.flowtype_device = "CPU"
+    return m
 
 
 # ---------------------------------------------------------------- the app
@@ -213,6 +254,12 @@ class App:
         self.status = "Loading speech model..."
         self.stop_requested = False
         self.busy = False
+        self.command = False       # Ctrl+Alt+Shift held -> command mode
+        self.cancel_hold = False   # another key pressed while holding -> it was a shortcut, not dictation
+        self.preview_text = ""
+        self.rec_token = 0
+        self.last_typed = ""
+        self.model_lock = threading.Lock()
         self.icon = None
 
     # ---- hotkeys
@@ -260,8 +307,21 @@ class App:
             elif not pressed and was:
                 if self.recording and self.rec_source == "hold":
                     self.stop_recording()
+            elif pressed and self.recording and self.rec_source == "hold" and not self.command \
+                    and self.cfg.get("command_mode", True) and self._safe_pressed("shift"):
+                self.command = True
+                self.ui.put(("listening", "Command · say what to do"))
             was = pressed
             time.sleep(0.012)
+
+    MODIFIERS = {"ctrl", "left ctrl", "right ctrl", "alt", "left alt", "right alt", "alt gr", "shift",
+                 "left shift", "right shift", "windows", "left windows", "right windows"}
+
+    def _on_key(self, e):
+        # Pressing a normal key while holding Ctrl+Alt means a shortcut (Ctrl+Alt+D, Ctrl+Alt+Del...), not dictation.
+        if e.event_type == "down" and self.recording and self.rec_source == "hold" \
+                and (e.name or "").lower() not in self.MODIFIERS:
+            self.cancel_hold = True
 
     def toggle(self):
         if self.recording:
@@ -306,11 +366,18 @@ class App:
             self.rec_source = source
             self.rec_started = time.time()
             self.stop_requested = False
+            self.command = False
+            self.cancel_hold = False
+            self.preview_text = ""
+            self.rec_token += 1
+            token = self.rec_token
         self.beep(880)
         label = "Listening"
         prefix = "Hands-free · " if source == "toggle" else ""
         self.ui.put(("listening", prefix + label))
         self.set_icon(True)
+        if self.cfg.get("live_preview", True) and self.model is not None:
+            threading.Thread(target=self.preview_loop, args=(token,), daemon=True).start()
 
     def stop_recording(self):
         with self.lock:
@@ -326,15 +393,16 @@ class App:
         self.beep(660)
         self.set_icon(False)
         frames, self.frames = self.frames, []
-        if not frames:
+        if not frames or self.cancel_hold:
             self.ui.put(("hide", ""))
             return
         audio = self.np.concatenate(frames).flatten()
         if len(audio) / SAMPLE_RATE < self.cfg["min_seconds"] or float(self.np.abs(audio).max()) < 0.004:
             self.ui.put(("hide", ""))
             return
-        self.ui.put(("working", "Transcribing"))
-        self.jobs.put((audio, foreground_title()))
+        mode = "command" if self.command else "dictate"
+        self.ui.put(("working", "Understanding your command" if mode == "command" else "Transcribing"))
+        self.jobs.put((audio, foreground_title(), mode))
 
     # ---- transcription
     def model_loader(self):
@@ -342,7 +410,7 @@ class App:
             self.ui.put(("working", "Getting speech model ready (first run can take a few minutes)"))
             self.model = load_model(self.cfg)
             self.ui.put(("info", f"FlowType ready - hold {self.cfg['hotkey_hold'].title()} and talk"))
-            self.status = f"Ready - hold {self.cfg['hotkey_hold']} to talk"
+            self.status = f"Ready ({getattr(self.model, 'flowtype_device', 'CPU')}) - hold {self.cfg['hotkey_hold']} to talk"
             log.info("Model %s loaded", self.cfg["model"])
         except Exception as e:
             self.status = "Model failed to load - see flowtype.log"
@@ -351,36 +419,52 @@ class App:
         self.update_tray()
 
     def worker(self):
-        from textproc import postprocess, split_send_command, grammar_fix, format_email, is_email_window
+        import textproc as tp
         while True:
-            audio, title = self.jobs.get()
+            audio, title, mode = self.jobs.get()
             self.busy = True
             try:
                 t0 = time.time()
                 raw = self.transcribe_local(audio)
-                if self.cfg.get("cleanup") == "llm":
-                    self.ui.put(("working", "Polishing"))
-                raw, said_send = split_send_command(raw)
-                text = postprocess(raw, self.cfg, title, log) if raw else ""
+                if not raw.strip():
+                    self.ui.put(("hide", ""))
+                    continue
+                if mode == "command":
+                    self.run_command(raw, title)
+                    continue
+                raw, said_send = tp.split_send_command(raw)
+                kind = tp.app_kind(title) if self.cfg.get("tone_by_app", True) else "other"
+                email = self.cfg.get("email_format", True) and tp.is_email_window(title)
                 fixes, sugg = [], []
-                if text and self.cfg.get("grammar_check", True):
-                    self.ui.put(("working", "Checking grammar"))
-                    try:
-                        text, fixes, sugg = grammar_fix(text, self.cfg)
-                    except Exception as e:  # offline / LanguageTool busy -> type it as is
-                        log.warning("Grammar check skipped: %s", e)
-                email = bool(text) and self.cfg.get("email_format", True) and is_email_window(title)
-                if email:
-                    text = format_email(text)
-                log.info("Transcribed %.1fs audio in %.1fs (fixes=%d, suggestions=%d, email=%s)",
-                         len(audio) / SAMPLE_RATE, time.time() - t0, len(fixes), len(sugg), email)
+                snippet = tp.find_snippet(raw, self.cfg.get("snippets")) if raw else None
+                if snippet is not None:                       # "insert my signature"
+                    text = snippet
+                elif kind == "code":                          # editors / terminals
+                    text = tp.code_format(tp.FILLER_RE.sub(" ", tp.apply_replacements(raw, self.cfg.get("replacements"))))
+                else:
+                    if self.cfg.get("cleanup") == "llm":
+                        self.ui.put(("working", "Polishing"))
+                    text = tp.postprocess(raw, self.cfg, title, log) if raw else ""
+                    if text and self.cfg.get("grammar_check", True):
+                        self.ui.put(("working", "Checking grammar"))
+                        try:
+                            text, fixes, sugg = tp.grammar_fix(text, self.cfg)
+                        except Exception as e:  # offline / LanguageTool busy -> type it as is
+                            log.warning("Grammar check skipped: %s", e)
+                    if text and email:
+                        text = tp.format_email(text)
+                    elif text and kind == "chat":
+                        text = tp.chat_style(text)
+                log.info("Transcribed %.1fs audio in %.1fs (app=%s, snippet=%s, fixes=%d, suggestions=%d)",
+                         len(audio) / SAMPLE_RATE, time.time() - t0, kind, snippet is not None, len(fixes), len(sugg))
                 press_enter = said_send or (self.cfg.get("auto_send") and bool(text) and not email)
                 if text:
-                    self.type_text(text, sending=press_enter)
+                    self.type_text(text, sending=press_enter or kind == "code")
+                    self.last_typed = text
                     self.save_history(raw, text, title, len(audio) / SAMPLE_RATE)
                 if press_enter:
                     # Gmail / Outlook send with Ctrl+Enter; chats send with Enter
-                    self.press_enter("ctrl+enter" if is_email_window(title) else "enter")
+                    self.press_enter("ctrl+enter" if email else "enter")
                 note = self.grammar_note(fixes, sugg)
                 self.ui.put(("info", note) if note else ("hide", ""))
             except Exception as e:
@@ -388,6 +472,103 @@ class App:
                 self.ui.put(("error", "Something went wrong - see log"))
             finally:
                 self.busy = False
+
+    # ---- 1. command mode: select text, hold Ctrl+Alt+Shift, say what to do
+    def run_command(self, instruction, title):
+        import textproc as tp
+        if not tp.llm_configured(self.cfg):
+            self.ui.put(("error", "Command mode needs an AI - tray menu → Command mode AI"))
+            return
+        terminal = tp.app_kind(title) == "code" and any(
+            k in title.lower() for k in ("terminal", "powershell", "command prompt", "cmd.exe", "bash"))
+        selection = "" if terminal else self.grab_selection()  # Ctrl+C would stop a program in a terminal
+        self.ui.put(("working", "Rewriting your selection" if selection.strip() else "Writing"))
+        try:
+            out = tp.llm_command(instruction, selection, self.cfg, title)
+        except Exception as e:
+            log.error("Command mode AI failed: %s", e)
+            self.ui.put(("error", "The AI didn't answer - check tray → Command mode AI"))
+            return
+        self.type_text(out, sending=True)
+        self.last_typed = out
+        self.save_history("[command] " + instruction, out, title, 0)
+        self.ui.put(("info", "Done - press Ctrl+Z to undo" if selection.strip() else "Done"))
+        log.info("Command: %r (selection %d chars)", instruction, len(selection))
+
+    def grab_selection(self):
+        """Copy whatever is selected in the active app, then put the clipboard back."""
+        self.wait_for_modifiers(("windows", "left windows", "alt", "shift", "ctrl"))
+        try:
+            old = self.pc.paste()
+        except Exception:
+            old = None
+        marker = "\u2063flowtype-empty\u2063"
+        self.pc.copy(marker)
+        time.sleep(0.05)
+        self.kb.send("ctrl+c")
+        selection = ""
+        for _ in range(12):
+            time.sleep(0.05)
+            try:
+                cur = self.pc.paste()
+            except Exception:
+                cur = marker
+            if cur != marker:
+                selection = cur
+                break
+        if old is not None:
+            try:
+                self.pc.copy(old)
+            except Exception:
+                pass
+        return selection
+
+    # ---- 3. learn words: select the right spelling, press Ctrl+Alt+D
+    def learn_selected(self):
+        threading.Thread(target=self._learn, daemon=True).start()
+
+    def _learn(self):
+        import textproc as tp
+        sel = self.grab_selection().strip()
+        if not sel or "\n" in sel or len(sel) > 60:
+            self.ui.put(("error", "Select a word or name first, then press " + self.cfg.get("hotkey_learn", "ctrl+alt+d").title()))
+            return
+        wrong, right = tp.learn_correction(sel, self.last_typed)
+        dictionary = list(self.cfg.get("dictionary") or [])
+        if right not in dictionary:
+            dictionary.append(right)
+        updates = {"dictionary": dictionary}
+        if wrong:
+            repl = dict(self.cfg.get("replacements") or {})
+            repl[wrong.lower()] = right
+            updates["replacements"] = repl
+        self.cfg.update(updates)
+        save_settings(updates)
+        self.ui.put(("info", f"Learned: {wrong} → {right}" if wrong else f"Added to your words: {right}"))
+        log.info("Learned word %r (fixes %r)", right, wrong)
+
+    # ---- 6. live preview while you talk
+    def preview_loop(self, token):
+        while self.recording and self.rec_token == token:
+            time.sleep(0.7)
+            frames = list(self.frames)
+            if not frames or self.model is None:
+                continue
+            audio = self.np.concatenate(frames).flatten()[-SAMPLE_RATE * 8:]
+            if len(audio) < SAMPLE_RATE * 0.6 or float(self.np.abs(audio).max()) < 0.01:
+                continue
+            try:
+                with self.model_lock:
+                    if not (self.recording and self.rec_token == token):
+                        break
+                    segs, _ = self.model.transcribe(audio, language="en", beam_size=1, vad_filter=False,
+                                                    condition_on_previous_text=False, without_timestamps=True)
+                    text = " ".join(x.text.strip() for x in segs).strip()
+            except Exception as e:
+                log.warning("Live preview stopped: %s", e)
+                break
+            if self.recording and self.rec_token == token:
+                self.preview_text = text
 
     def watch_for_updates(self):
         """Running from source: restart by itself when flowtype.py / textproc.py change."""
@@ -424,11 +605,12 @@ class App:
         prompt = None
         if self.cfg.get("dictionary"):
             prompt = "Glossary: " + ", ".join(self.cfg["dictionary"]) + "."
-        segments, _ = self.model.transcribe(
-            audio, language="en", beam_size=5, vad_filter=True,
-            condition_on_previous_text=False, initial_prompt=prompt,
-        )
-        return " ".join(s.text.strip() for s in segments).strip()
+        with self.model_lock:
+            segments, _ = self.model.transcribe(
+                audio, language="en", beam_size=5, vad_filter=True,
+                condition_on_previous_text=False, initial_prompt=prompt,
+            )
+            return " ".join(s.text.strip() for s in segments).strip()
 
     def grammar_note(self, fixes, sugg):
         parts = []
@@ -540,12 +722,62 @@ class App:
         else:
             self.ui.put(("info", "Settings reloaded"))
 
+    # ---- AI for command mode
+    LLM_PRESETS = {
+        "ollama": {"provider": "ollama", "base_url": "http://localhost:11434/v1", "model": "llama3.2", "api_key": ""},
+        "groq": {"provider": "groq", "base_url": "https://api.groq.com/openai/v1", "model": "openai/gpt-oss-20b"},
+        "anthropic": {"provider": "anthropic", "base_url": "", "model": "claude-haiku-5-5"},
+    }
+    LLM_NAMES = {"": "Off", "ollama": "Ollama (free, on this PC)", "groq": "Groq (free key)",
+                 "anthropic": "Claude (Anthropic key)", "openai": "Custom (OpenAI-compatible)"}
+
+    def set_llm(self, which):
+        def run():
+            llm = dict(self.cfg.get("llm") or {})
+            if which == "":
+                llm["provider"] = ""
+            else:
+                preset = dict(self.LLM_PRESETS[which])
+                if which in ("groq", "anthropic"):
+                    where = "console.groq.com/keys (free)" if which == "groq" else "console.anthropic.com"
+                    key = ask_text(f"Paste your API key from {where}.\nIt is stored only on this PC.")
+                    if not key:
+                        return
+                    preset["api_key"] = key.strip()
+                llm.update(preset)
+            self.cfg["llm"] = llm
+            save_settings({"llm": llm})
+            self.update_tray()
+            msg = {"": "Command mode AI off",
+                   "ollama": "Using Ollama - install it from ollama.com and run: ollama pull llama3.2"}.get(
+                which, "Command mode AI ready - select text, hold Ctrl+Alt+Shift and speak")
+            self.ui.put(("info", msg))
+        threading.Thread(target=run, daemon=True).start()
+
+    def toggle_key(self, key, on_msg, off_msg):
+        def f(*_):
+            self.cfg[key] = not self.cfg.get(key, True)
+            save_settings({key: self.cfg[key]})
+            self.ui.put(("info", on_msg if self.cfg[key] else off_msg))
+        return f
+
     def start_tray(self):
         import pystray
         M = pystray.MenuItem
+
+        def llm_item(code):
+            return M(self.LLM_NAMES[code], lambda *_: self.set_llm(code),
+                     checked=lambda item: (self.cfg.get("llm") or {}).get("provider", "") == code, radio=True)
+
         menu = pystray.Menu(
             M(lambda item: self.status, None, enabled=False),
             pystray.Menu.SEPARATOR,
+            M(lambda item: "Command mode AI: " + self.LLM_NAMES.get((self.cfg.get("llm") or {}).get("provider", ""), "Custom"),
+              pystray.Menu(*[llm_item(c) for c in ("", "ollama", "groq", "anthropic")])),
+            M("Live preview while talking", self.toggle_key("live_preview", "Live preview ON", "Live preview OFF"),
+              checked=lambda item: bool(self.cfg.get("live_preview", True))),
+            M("Match tone to the app (chat / code / email)", self.toggle_key("tone_by_app", "Tone per app ON", "Tone per app OFF"),
+              checked=lambda item: bool(self.cfg.get("tone_by_app", True))),
             M("Grammar check (fix + suggest)", self.toggle_grammar,
               checked=lambda item: bool(self.cfg.get("grammar_check", True))),
             M("Email formatting in Gmail / Outlook", self.toggle_email,
@@ -553,7 +785,7 @@ class App:
             M("Auto-send (press Enter after each message)", self.toggle_auto_send,
               checked=lambda item: bool(self.cfg.get("auto_send"))),
             pystray.Menu.SEPARATOR,
-            M("Open settings", lambda *_: os.startfile(CONFIG_PATH)),
+            M("Edit snippets, words & settings", lambda *_: os.startfile(CONFIG_PATH)),
             M("Reload settings", self.reload_config),
             M("Open history", lambda *_: os.path.exists(HISTORY_PATH) and os.startfile(HISTORY_PATH)),
             M("Open log", lambda *_: os.startfile(LOG_PATH)),
@@ -587,6 +819,11 @@ class App:
             self.kb.add_hotkey(self.cfg["hotkey_toggle"], self.toggle, suppress=True)
         except Exception as e:
             log.error("Toggle hotkey '%s' not registered: %s", self.cfg["hotkey_toggle"], e)
+        try:
+            self.kb.add_hotkey(self.cfg.get("hotkey_learn", "ctrl+alt+d"), self.learn_selected, suppress=True)
+        except Exception as e:
+            log.error("Learn hotkey not registered: %s", e)
+        self.kb.hook(self._on_key)
         self.start_tray()
         log.info("FlowType started")
         overlay.tick()
@@ -680,8 +917,9 @@ class Overlay:
         t = time.time()
         cy = H / 2
         st = self.shown
+        preview = (self.app.preview_text or "").strip() if st == "listening" else ""
         if st == "listening":
-            self.W = int(310 * s)
+            self.W = int((560 if preview else 310) * s)
         else:
             self.W = int(min(max(self.f_label.measure(self.text + "...") + 70 * s, 200 * s),
                              self.root.winfo_screenwidth() * 0.9))
@@ -694,9 +932,11 @@ class Overlay:
             p = (t * 1.2) % 1.0
             ring = (7 + 9 * p) * s
             c.create_oval(mx - ring, cy - ring, mx + ring, cy + ring,
-                          outline=self._mix(self.RED, self.BG, p), width=max(1, int(2 * s)))
+                          outline=self._mix("#f59e0b" if self.app.command else self.RED, self.BG, p),
+                          width=max(1, int(2 * s)))
+            dot = "#f59e0b" if self.app.command else self.RED   # amber = command mode
             r = (6.5 + 1.5 * min(1.0, self.app.level * 25)) * s
-            c.create_oval(mx - r, cy - r, mx + r, cy + r, fill=self.RED, outline="")
+            c.create_oval(mx - r, cy - r, mx + r, cy + r, fill=dot, outline="")
             # mirrored, smoothed waveform: newest sound in the middle, rippling outwards
             x0, gap, bw = 50 * s, 7.2 * s, 3.6 * s
             mid = self.BARS // 2
@@ -713,12 +953,23 @@ class Overlay:
                 c.create_rectangle(x, cy - h / 2, x + bw, cy + h / 2, fill=self.colors[i], outline="")
                 c.create_oval(x, cy - h / 2 - bw / 2, x + bw, cy - h / 2 + bw / 2, fill=self.colors[i], outline="")
                 c.create_oval(x, cy + h / 2 - bw / 2, x + bw, cy + h / 2 + bw / 2, fill=self.colors[i], outline="")
-            # label + timer
+            # label + timer, or the live preview of what you're saying
             tx = x0 + self.BARS * gap + 10 * s
             secs = int(t - self.app.rec_started) if self.app.recording else 0
-            c.create_text(tx, cy - 7 * s, text=self.text, fill=self.TEXT, font=self.f_label, anchor="w")
-            c.create_text(tx, cy + 9 * s, text="%d:%02d" % (secs // 60, secs % 60),
-                          fill=self.MUTED, font=self.f_small, anchor="w")
+            timer = "%d:%02d" % (secs // 60, secs % 60)
+            if preview:
+                room = self.W - tx - 22 * s
+                shown = preview
+                while shown and self.f_label.measure("…" + shown) > room:
+                    shown = shown[1:]
+                if shown != preview:
+                    shown = "…" + shown.lstrip()
+                c.create_text(tx, cy - 7 * s, text=shown, fill=self.TEXT, font=self.f_label, anchor="w")
+                c.create_text(tx, cy + 9 * s, text=f"{timer}  ·  {self.text}", fill=self.MUTED,
+                              font=self.f_small, anchor="w")
+            else:
+                c.create_text(tx, cy - 7 * s, text=self.text, fill=self.TEXT, font=self.f_label, anchor="w")
+                c.create_text(tx, cy + 9 * s, text=timer, fill=self.MUTED, font=self.f_small, anchor="w")
         else:
             ix = 26 * s
             if st == "working":
