@@ -5,11 +5,35 @@ Speech recognition runs **offline on your PC** (OpenAI Whisper via faster-whispe
 
 ![FlowType on-screen indicator](screenshot.png)
 
-## ⬇️ Download
+## ⬇️ Install — pick one
+
+### Option A: ready-made app (easiest, no Python needed)
 1. Go to **[Releases](../../releases/latest)** and download **`FlowType-Windows.zip`**.
 2. Unzip it and double-click **`FlowType.exe`**. It installs itself, adds a Desktop icon and starts with Windows.
    - If Windows says *"Windows protected your PC"*, click **More info → Run anyway** (the app isn't code-signed).
-3. The first launch downloads the speech model (~500 MB) — give it a few minutes.
+3. The first launch downloads the speech model (~500 MB), so give it a few minutes before your first try.
+
+### Option B: from the source code (Download ZIP or git clone)
+1. Get the code, either way:
+   - Click the green **Code** button → **Download ZIP**, then unzip it (e.g. to `Documents\FlowType`), **or**
+   - `git clone https://github.com/soumyaswarrup/FlowType.git`
+2. Open the folder and double-click **`setup.bat`**. It will:
+   - find Python 3.10–3.14, or install Python 3.12 for you (via winget) if you don't have it,
+   - create a private `.venv` and install the packages,
+   - download the speech model (~500 MB, one time),
+   - add Desktop / Start-menu shortcuts, set FlowType to start with Windows, and start it.
+   Takes about 5 minutes. Details are written to `setup.log`.
+3. From then on, start it with the **FlowType** Desktop icon (or `FlowType.bat`).
+
+Keep the folder where it is after setup, because the shortcuts point to it. If something doesn't work, run **`start-debug.bat`** to see the error.
+
+| File | What it does |
+|---|---|
+| `setup.bat` | One-time install (Option B) |
+| `FlowType.bat` | Start / restart FlowType |
+| `start-debug.bat` | Run with a console window to see errors |
+| `build-exe.bat` | Build your own `FlowType-Windows.zip` (the Option A app) |
+| `remove-from-startup.bat` | Stop FlowType starting with Windows |
 
 ## 🗣️ How to use
 | Do this | What happens |
@@ -32,13 +56,8 @@ In Gmail / Outlook, dictation is laid out as an email — greeting line, short p
 ### ⚙️ Settings
 Click the **^** arrow next to the clock → **right-click the purple mic**: grammar check, email formatting, auto-send, settings file, history, quit.
 
-## 🛠️ Run or build from source
-Requires Windows 10/11 and Python 3.10+.
-```bat
-setup.bat        :: creates .venv, installs packages, downloads the model, starts FlowType
-build-exe.bat    :: builds dist\FlowType-Windows.zip (the shareable app)
-start-debug.bat  :: runs with a console window to see errors
-```
+## 🛠️ For developers
+Python app (`flowtype.py` = tray app, hotkeys, recording, typing; `textproc.py` = clean-up, "send it", grammar, email layout).
 Publishing a release on GitHub (e.g. `v1.0.1`) makes GitHub Actions build the exe and attach `FlowType-Windows.zip` to it automatically.
 
 ## 🔒 Privacy
