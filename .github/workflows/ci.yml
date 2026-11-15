@@ -1,0 +1,46 @@
+# Installs FlowType and runs its self-test on Windows, macOS and Linux for every push.
+name: Test on Windows, macOS, Linux
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  selftest:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Linux system packages
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libportaudio2 xvfb xclip python3-tk
+      - name: Install FlowType
+        run: python -m pip install -r requirements.txt
+      - name: Use the small test model
+        run: echo '{"model":"tiny.en"}' > config.json
+      - name: Self-test (Linux)
+        if: runner.os == 'Linux'
+        run: xvfb-run -a python flowtype.py --selftest selftest.txt && cat selftest.txt && grep -q "SELFTEST OK" selftest.txt
+      - name: Self-test (macOS / Windows)
+        if: runner.os != 'Linux'
+        shell: bash
+        run: python flowtype.py --selftest selftest.txt; cat selftest.txt; grep -q "SELFTEST OK" selftest.txt
+      - name: Text processing checks
+        shell: bash
+        run: |
+          python - <<'PY'
+          import textproc as tp
+          assert tp.split_send_command("see you soon, send it now.") == ("see you soon", True)
+          assert tp.code_format("python main dot py dash dash help") == "python main.py --help"
+          assert tp.professional_style("hey I'm gonna send u the report").startswith("Hello, I am going to send you")
+          assert "1. The pricing sheet" in tp.format_email("Hi Rahul, there are two things pending, first the pricing sheet, second the deck. Thanks, Soumya")
+          print("text checks ok")
+          PY

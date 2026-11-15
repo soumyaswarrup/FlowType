@@ -513,7 +513,7 @@ def professional_style(text):
     """Full sentences, no slang or contractions, proper capitals and full stop."""
     t = _swap(text.strip(), _PRO_WORDS)
     t = re.sub(r"(?<![.!?])\s*$", ".", t) if t and t[-1] not in ".!?:\n" else t
-    t = re.sub(r"^(Hello|Hi|Yes|No|Okay|Sure)\s+(?=[A-Za-z])", r"\1, ", t)  # "Hello I am" -> "Hello, I am"
+    t = re.sub(r"(?i)^(Hello|Hi|Yes|No|Okay|Sure)\s+(?=[A-Za-z])", r"\1, ", t)  # "Hello I am" -> "Hello, I am"
     return tidy(t)
 
 

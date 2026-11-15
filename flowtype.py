@@ -129,60 +129,15 @@ def save_settings(updates):
         json.dump(data, f, indent=2, ensure_ascii=False)
 
 
-def ask_text(prompt, title="FlowType"):
-    """Small Windows input box (runs PowerShell's VB InputBox, no extra packages)."""
-    import subprocess
-    p = prompt.replace("'", "''")
-    t = title.replace("'", "''")
-    cmd = ["powershell", "-NoProfile", "-Command",
-           "Add-Type -AssemblyName Microsoft.VisualBasic; "
-           f"[Microsoft.VisualBasic.Interaction]::InputBox('{p}', '{t}', '')"]
-    try:
-        out = subprocess.run(cmd, capture_output=True, text=True, timeout=300, creationflags=0x08000000)
-        return out.stdout.strip()
-    except Exception as e:
-        log.warning("Input box failed: %s", e)
-        return ""
+import platform_support as ps  # noqa: E402  (Windows / macOS / Linux differences)
 
-
-# ---------------------------------------------------------------- Windows bits
-user32 = ctypes.windll.user32 if os.name == "nt" else None
-
-
-def foreground_title():
-    try:
-        hwnd = user32.GetForegroundWindow()
-        n = user32.GetWindowTextLengthW(hwnd)
-        buf = ctypes.create_unicode_buffer(n + 1)
-        user32.GetWindowTextW(hwnd, buf, n + 1)
-        return buf.value
-    except Exception:
-        return ""
-
-
-def mask_win_key():
-    """Inject a no-op key (vk 0xE8) so releasing Win doesn't pop the Start menu."""
-    try:
-        user32.keybd_event(0xE8, 0, 0, 0)
-        user32.keybd_event(0xE8, 0, 2, 0)
-    except Exception:
-        pass
-
-
-MUTEX = None
+user32 = ctypes.windll.user32 if ps.IS_WIN else None
+foreground_title = ps.foreground_title
+mask_win_key = ps.mask_alt_win
 
 
 def single_instance():
-    global MUTEX
-    for _ in range(20):  # a restarting copy may still be closing
-        MUTEX = ctypes.windll.kernel32.CreateMutexW(None, False, "FlowTypeSingleInstanceMutex")
-        if ctypes.windll.kernel32.GetLastError() != 183:  # ERROR_ALREADY_EXISTS
-            return True
-        ctypes.windll.kernel32.CloseHandle(MUTEX)
-        if "--restarted" not in sys.argv:
-            return False
-        time.sleep(0.25)
-    return False
+    return ps.single_instance(DATA_DIR, wait="--restarted" in sys.argv)
 
 
 def add_cuda_dll_dirs():
@@ -233,11 +188,10 @@ def load_model(cfg):
 # ---------------------------------------------------------------- the app
 class App:
     def __init__(self):
-        import keyboard
         import numpy as np
         import pyperclip
         import sounddevice as sd
-        self.kb, self.np, self.pc, self.sd = keyboard, np, pyperclip, sd
+        self.kb, self.np, self.pc, self.sd = ps.make_keys(), np, pyperclip, sd
 
         self.cfg = load_config()
         self.ui = queue.Queue()
@@ -270,11 +224,8 @@ class App:
                 k = "windows"
             cands = []
             for name in (k, "left " + k, "right " + k):
-                try:
-                    self.kb.key_to_scan_codes(name)
+                if self.kb.valid(name):
                     cands.append(name)
-                except Exception:
-                    pass
             if not cands:
                 raise ValueError(f"Unknown key '{k}' in hotkey '{combo}'")
             groups.append(cands)
@@ -316,13 +267,9 @@ class App:
             was = pressed
             time.sleep(0.012)
 
-    MODIFIERS = {"ctrl", "left ctrl", "right ctrl", "alt", "left alt", "right alt", "alt gr", "shift",
-                 "left shift", "right shift", "windows", "left windows", "right windows"}
-
-    def _on_key(self, e):
+    def _on_key(self, event_type, name):
         # Pressing a normal key while holding Ctrl+Alt means a shortcut (Ctrl+Alt+D, Ctrl+Alt+Del...), not dictation.
-        if e.event_type == "down" and self.recording and self.rec_source == "hold" \
-                and (e.name or "").lower() not in self.MODIFIERS:
+        if event_type == "down" and self.recording and self.rec_source == "hold" and name not in ps.MODIFIER_NAMES:
             self.cancel_hold = True
 
     def toggle(self):
@@ -346,8 +293,7 @@ class App:
 
     def beep(self, freq):
         if self.cfg.get("sounds"):
-            import winsound
-            threading.Thread(target=winsound.Beep, args=(freq, 45), daemon=True).start()
+            ps.beep(freq)
 
     def start_recording(self, source):
         with self.lock:
@@ -471,7 +417,7 @@ class App:
                     self.save_history(raw, text, title, len(audio) / SAMPLE_RATE)
                 if press_enter:
                     # Gmail / Outlook send with Ctrl+Enter; chats send with Enter
-                    self.press_enter("ctrl+enter" if email else "enter")
+                    self.press_enter(ps.SEND_EMAIL if email else "enter")
                 note = self.grammar_note(fixes, sugg)
                 self.ui.put(("info", note) if note else ("hide", ""))
             except Exception as e:
@@ -504,7 +450,7 @@ class App:
 
     def grab_selection(self):
         """Copy whatever is selected in the active app, then put the clipboard back."""
-        self.wait_for_modifiers(("windows", "left windows", "alt", "shift", "ctrl"))
+        self.wait_for_modifiers(("windows", "left windows", "alt", "shift", "ctrl", "cmd"))
         try:
             old = self.pc.paste()
         except Exception:
@@ -512,7 +458,7 @@ class App:
         marker = "\u2063flowtype-empty\u2063"
         self.pc.copy(marker)
         time.sleep(0.05)
-        self.kb.send("ctrl+c")
+        self.kb.send(ps.COPY)
         selection = ""
         for _ in range(12):
             time.sleep(0.05)
@@ -595,10 +541,7 @@ class App:
                 time.sleep(1)
             log.info("Code updated - restarting")
             import subprocess
-            try:
-                ctypes.windll.kernel32.CloseHandle(MUTEX)
-            except Exception:
-                pass
+            ps.release_instance()
             subprocess.Popen([sys.executable, os.path.join(APP_DIR, "flowtype.py"), "--restarted"],
                              cwd=APP_DIR, close_fds=True)
             os._exit(0)
@@ -639,14 +582,14 @@ class App:
         save_settings({"email_format": self.cfg["email_format"]})
         self.ui.put(("info", "Email formatting ON" if self.cfg["email_format"] else "Email formatting OFF"))
 
-    def wait_for_modifiers(self, keys=("windows", "left windows", "alt", "shift")):
+    def wait_for_modifiers(self, keys=("windows", "left windows", "alt", "shift", "cmd")):
         # Wait for the user to let go of modifiers so Ctrl+V isn't read as Win+V etc.
         end = time.time() + 3
         while time.time() < end and any(self._safe_pressed(k) for k in keys):
             time.sleep(0.02)
 
     def press_enter(self, combo="enter"):
-        self.wait_for_modifiers(("windows", "left windows", "alt", "shift", "ctrl"))
+        self.wait_for_modifiers(("windows", "left windows", "alt", "shift", "ctrl", "cmd"))
         time.sleep(0.15)
         self.kb.send(combo)
 
@@ -667,7 +610,7 @@ class App:
                 old = None
         self.pc.copy(text)
         time.sleep(0.04)
-        self.kb.send("ctrl+v")
+        self.kb.send(ps.PASTE)
         if old is not None:
             time.sleep(0.35)
             try:
@@ -676,10 +619,7 @@ class App:
                 pass
 
     def _safe_pressed(self, k):
-        try:
-            return self.kb.is_pressed(k)
-        except Exception:
-            return False
+        return self.kb.is_pressed(k)
 
     def save_history(self, raw, text, title, secs):
         if not self.cfg.get("save_history"):
@@ -747,7 +687,7 @@ class App:
                 preset = dict(self.LLM_PRESETS[which])
                 if which in ("groq", "anthropic"):
                     where = "console.groq.com/keys (free)" if which == "groq" else "console.anthropic.com"
-                    key = ask_text(f"Paste your API key from {where}.\nIt is stored only on this PC.")
+                    key = self.ask(f"Paste your API key from {where}. It is stored only on this computer.")
                     if not key:
                         return
                     preset["api_key"] = key.strip()
@@ -774,6 +714,18 @@ class App:
         self.update_tray()
         self.ui.put(("info", "Tone: " + tp.TONES[tone] + (" - casual in chats, code in editors, formal in email"
                                                             if tone == "auto" else " everywhere")))
+
+    def ask(self, prompt):
+        """Input box: the system's own if it has one, otherwise a small FlowType window."""
+        value = ps.ask_text_native(prompt)
+        if value is not None:
+            return value
+        answer = queue.Queue()
+        self.ui.put(("ask", (prompt, answer)))
+        try:
+            return answer.get(timeout=600) or ""
+        except queue.Empty:
+            return ""
 
     def toggle_key(self, key, on_msg, off_msg):
         def f(*_):
@@ -812,10 +764,10 @@ class App:
             M("Auto-send (press Enter after each message)", self.toggle_auto_send,
               checked=lambda item: bool(self.cfg.get("auto_send"))),
             pystray.Menu.SEPARATOR,
-            M("Edit snippets, words & settings", lambda *_: os.startfile(CONFIG_PATH)),
+            M("Edit snippets, words & settings", lambda *_: ps.open_path(CONFIG_PATH)),
             M("Reload settings", self.reload_config),
-            M("Open history", lambda *_: os.path.exists(HISTORY_PATH) and os.startfile(HISTORY_PATH)),
-            M("Open log", lambda *_: os.startfile(LOG_PATH)),
+            M("Open history", lambda *_: os.path.exists(HISTORY_PATH) and ps.open_path(HISTORY_PATH)),
+            M("Open log", lambda *_: ps.open_path(LOG_PATH)),
             pystray.Menu.SEPARATOR,
             M("Quit", self.quit),
         )
@@ -832,22 +784,20 @@ class App:
     # ---- main
     def run(self):
         import tkinter as tk
-        try:
-            ctypes.windll.shcore.SetProcessDpiAwareness(1)
-        except Exception:
-            pass
+        ps.set_dpi_aware()
         root = tk.Tk()
+        self.root = root
         overlay = Overlay(root, self)
         threading.Thread(target=self.model_loader, daemon=True).start()
         threading.Thread(target=self.worker, daemon=True).start()
         threading.Thread(target=self.hold_loop, daemon=True).start()
         threading.Thread(target=self.watch_for_updates, daemon=True).start()
         try:
-            self.kb.add_hotkey(self.cfg["hotkey_toggle"], self.toggle, suppress=False)
+            self.kb.add_hotkey(self.cfg["hotkey_toggle"], self.toggle)
         except Exception as e:
             log.error("Toggle hotkey '%s' not registered: %s", self.cfg["hotkey_toggle"], e)
         try:
-            self.kb.add_hotkey(self.cfg.get("hotkey_learn", "ctrl+alt+d"), self.learn_selected, suppress=False)
+            self.kb.add_hotkey(self.cfg.get("hotkey_learn", "ctrl+alt+d"), self.learn_selected)
         except Exception as e:
             log.error("Learn hotkey not registered: %s", e)
         self.kb.hook(self._on_key)
@@ -884,14 +834,25 @@ class Overlay:
         self.pos = None
         self.history = [0.0] * (self.BARS // 2 + 1)
         self.smooth = [0.0] * self.BARS
-        self.f_label = tkfont.Font(family="Segoe UI Semibold", size=10)
-        self.f_small = tkfont.Font(family="Segoe UI", size=9)
+        self.f_label = tkfont.Font(family=ps.UI_FONT_BOLD, size=10, weight="normal" if ps.IS_WIN else "bold")
+        self.f_small = tkfont.Font(family=ps.UI_FONT, size=9)
         self.colors = [self._grad(i / (self.BARS - 1)) for i in range(self.BARS)]
         root.overrideredirect(True)
         root.attributes("-topmost", True)
         root.attributes("-alpha", 0.0)
-        root.configure(bg=self.KEY)
-        root.attributes("-transparentcolor", self.KEY)
+        if ps.IS_WIN:                      # see-through corners
+            root.configure(bg=self.KEY)
+            root.attributes("-transparentcolor", self.KEY)
+        elif ps.IS_MAC:
+            self.KEY = "systemTransparent"
+            try:
+                root.attributes("-transparent", True)
+            except Exception:
+                self.KEY = self.BG
+            root.configure(bg=self.KEY)
+        else:                              # Linux: no colour-key transparency; corners match the pill
+            self.KEY = self.BG
+            root.configure(bg=self.KEY)
         self.c = tk.Canvas(root, width=self.W, height=self.H, bg=self.KEY, highlightthickness=0)
         self.c.pack()
         self._place()
@@ -1023,6 +984,17 @@ class Overlay:
         try:
             while True:
                 state, text = self.app.ui.get_nowait()
+                if state == "ask":  # input box requested from another thread
+                    import tkinter as tk
+                    from tkinter import simpledialog
+                    prompt, answer = text
+                    w = tk.Toplevel(self.root)
+                    w.withdraw()
+                    try:
+                        answer.put(simpledialog.askstring("FlowType", prompt, parent=w) or "")
+                    finally:
+                        w.destroy()
+                    continue
                 if state == "hide":
                     self.state = "hide"
                     continue
@@ -1042,7 +1014,16 @@ class Overlay:
         self.alpha += (target - self.alpha) * 0.3
         if abs(self.alpha - target) < 0.02:
             self.alpha = target
-        self.root.attributes("-alpha", self.alpha)
+        try:
+            self.root.attributes("-alpha", self.alpha)
+        except Exception:
+            pass
+        if ps.IS_LINUX:  # no alpha without a compositor: hide/show the window instead
+            if self.alpha <= 0.01 and self.root.state() != "withdrawn":
+                self.root.withdraw()
+            elif self.alpha > 0.01 and self.root.state() == "withdrawn":
+                self.root.deiconify()
+                self.root.overrideredirect(True)
         if visible:
             self.root.attributes("-topmost", True)
         self.draw()
@@ -1061,11 +1042,7 @@ def make_icon_file():
     img.save(os.path.join(APP_DIR, "flowtype.ico"), sizes=[(16, 16), (32, 32), (48, 48), (64, 64), (256, 256)])
 
 
-def message_box(text, title="FlowType"):
-    try:
-        ctypes.windll.user32.MessageBoxW(None, text, title, 0x40)
-    except Exception:
-        pass
+message_box = ps.message_box
 
 
 def make_shortcuts(exe):
@@ -1117,7 +1094,12 @@ def selftest(out_path):
     lines = []
     try:
         import numpy as np
-        import keyboard, pyperclip, pystray, sounddevice, tkinter  # noqa: F401
+        import pyperclip, pystray, sounddevice, tkinter  # noqa: F401
+        if ps.IS_WIN:
+            import keyboard  # noqa: F401
+        else:
+            import pynput  # noqa: F401
+        lines.append("platform: " + ps.PLATFORM)
         from PIL import Image  # noqa: F401
         import textproc  # noqa: F401
         lines.append("imports ok")
@@ -1138,7 +1120,7 @@ def main():
     if "--selftest" in sys.argv:
         selftest(sys.argv[sys.argv.index("--selftest") + 1])
         return
-    if FROZEN and "--no-install" not in sys.argv and self_install():
+    if FROZEN and ps.IS_WIN and "--no-install" not in sys.argv and self_install():
         return
     if "--make-icon" in sys.argv:
         make_icon_file()

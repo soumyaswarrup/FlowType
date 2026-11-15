@@ -1,19 +1,19 @@
-# FlowType 🎙️ — talk instead of typing (Windows)
+# FlowType 🎙️ — talk instead of typing (Windows · macOS · Linux)
 
-Hold a key, speak, and your words are typed into **any app**: WhatsApp Web, Gmail, Outlook, Word, Slack, ChatGPT, Claude…
+Hold a key, speak, and your words are typed into **any app** on Windows, macOS or Linux: WhatsApp Web, Gmail, Outlook, Word, Slack, ChatGPT, Claude…
 Speech recognition runs **offline on your PC** (OpenAI Whisper via faster-whisper). Free, no account needed.
 
 ![FlowType on-screen indicator](screenshot.png)
 
 ## ⬇️ Install — pick one
 
-### Option A: ready-made app (easiest, no Python needed)
+### Option A (Windows): ready-made app (easiest, no Python needed)
 1. Go to **[Releases](../../releases/latest)** and download **`FlowType-Windows.zip`**.
 2. Unzip it and double-click **`FlowType.exe`**. It installs itself, adds a Desktop icon and starts with Windows.
    - If Windows says *"Windows protected your PC"*, click **More info → Run anyway** (the app isn't code-signed).
 3. The first launch downloads the speech model (~500 MB), so give it a few minutes before your first try.
 
-### Option B: from the source code (Download ZIP or git clone)
+### Option B (Windows): from the source code (Download ZIP or git clone)
 1. Get the code, either way:
    - Click the green **Code** button → **Download ZIP**, then unzip it (e.g. to `Documents\FlowType`), **or**
    - `git clone https://github.com/soumyaswarrup/FlowType.git`
@@ -35,6 +35,32 @@ Keep the folder where it is after setup, because the shortcuts point to it. If s
 | `build-exe.bat` | Build your own `FlowType-Windows.zip` (the Option A app) |
 | `enable-gpu.bat` | Optional: use an NVIDIA GPU for faster text |
 | `remove-from-startup.bat` | Stop FlowType starting with Windows |
+| `setup.sh` / `flowtype.sh` / `uninstall-autostart.sh` | Same jobs on macOS / Linux |
+
+### macOS and Linux
+1. Get the code: green **Code** button → **Download ZIP** (then unzip), or `git clone https://github.com/soumyaswarrup/FlowType.git`.
+2. Open a terminal in that folder and run:
+   ```bash
+   bash setup.sh
+   ```
+   It checks Python 3.10+ (with Tk), installs the packages and the speech model (~500 MB), sets FlowType to start at login, and starts it.
+   - **Mac:** if Python is missing, run `brew install python@3.12 python-tk@3.12` (or use the python.org installer).
+   - **Linux:** setup installs `libportaudio2`, `xclip` and `xdotool` if they're missing (it asks for your password).
+3. **Mac only: allow permissions.** Open System Settings → Privacy & Security and allow **Microphone**, **Accessibility** and **Input Monitoring** for Terminal / Python. Then restart FlowType with `bash flowtype.sh`.
+4. Use it: **hold `Ctrl + Option`** (Mac) or **`Ctrl + Alt`** (Linux), speak, release. On a Mac, text is pasted with ⌘V and emails are sent with ⌘↩.
+
+| | Windows | macOS | Linux |
+|---|---|---|---|
+| Install | `FlowType.exe` or `setup.bat` | `bash setup.sh` | `bash setup.sh` |
+| Start / restart | `FlowType.bat` | `bash flowtype.sh` | `bash flowtype.sh` |
+| Dictate | hold Ctrl+Alt | hold Ctrl+Option | hold Ctrl+Alt |
+| Command mode | hold Ctrl+Alt+Shift | hold Ctrl+Option+Shift | hold Ctrl+Alt+Shift |
+| Settings menu | tray icon (^ next to clock) | menu-bar icon | tray icon* |
+| NVIDIA GPU | ✅ (`enable-gpu.bat`) | — (CPU; Apple Silicon is fast) | ✅ with CUDA installed |
+
+\*Linux notes: needs an **X11 session** for global hotkeys and typing (on Wayland they only work in X11/XWayland apps, so pick "Ubuntu on Xorg" or similar at login). On GNOME, the tray icon needs the *AppIndicator* extension; everything else works without it.
+
+**Testing:** every push runs an install + self-test on Windows, macOS and Linux (GitHub Actions). The macOS version hasn't been tried by hand on a real Mac yet, so please open an issue if something doesn't work.
 
 ## 🗣️ How to use
 | Do this | What happens |
@@ -103,7 +129,7 @@ Clear mistakes are fixed before typing (*"I has completed"* → *"I have complet
 Click the **^** arrow next to the clock → **right-click the purple mic**: command mode AI, tone, live preview, grammar check, email formatting, auto-send, snippets & words, history, quit.
 
 ## 🛠️ For developers
-Python app (`flowtype.py` = tray app, hotkeys, recording, overlay, command mode; `textproc.py` = clean-up, "send it", grammar, email layout, snippets, tone per app, AI calls).
+Python app (`platform_support.py` = everything that differs between Windows / macOS / Linux; `flowtype.py` = tray app, hotkeys, recording, overlay, command mode; `textproc.py` = clean-up, "send it", grammar, email layout, snippets, tone per app, AI calls).
 Publishing a release on GitHub (e.g. `v1.0.1`) makes GitHub Actions build the exe and attach `FlowType-Windows.zip` to it automatically.
 
 ## 🔒 Privacy
