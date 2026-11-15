@@ -293,7 +293,9 @@ class App:
         except ValueError as e:
             log.error("%s - falling back to 'right ctrl'", e)
             combo, groups = "right ctrl", self._key_groups("right ctrl")
-        uses_win = "windows" in combo.lower() or "win" in combo.lower().split("+")
+        # Releasing Win or Alt on its own can open the Start menu / an app's menu bar;
+        # a harmless dummy key press while they're held prevents that.
+        uses_win = any(k in combo.lower().split("+") for k in ("windows", "win", "alt"))
         was = False
         while True:
             pressed = self._pressed(groups)
@@ -555,11 +557,11 @@ class App:
     # ---- 6. live preview while you talk
     def preview_loop(self, token):
         while self.recording and self.rec_token == token:
-            time.sleep(0.7)
+            time.sleep(1.0)
             frames = list(self.frames)
             if not frames or self.model is None:
                 continue
-            audio = self.np.concatenate(frames).flatten()[-SAMPLE_RATE * 8:]
+            audio = self.np.concatenate(frames).flatten()[-SAMPLE_RATE * 6:]
             if len(audio) < SAMPLE_RATE * 0.6 or float(self.np.abs(audio).max()) < 0.01:
                 continue
             try:
@@ -841,11 +843,11 @@ class App:
         threading.Thread(target=self.hold_loop, daemon=True).start()
         threading.Thread(target=self.watch_for_updates, daemon=True).start()
         try:
-            self.kb.add_hotkey(self.cfg["hotkey_toggle"], self.toggle, suppress=True)
+            self.kb.add_hotkey(self.cfg["hotkey_toggle"], self.toggle, suppress=False)
         except Exception as e:
             log.error("Toggle hotkey '%s' not registered: %s", self.cfg["hotkey_toggle"], e)
         try:
-            self.kb.add_hotkey(self.cfg.get("hotkey_learn", "ctrl+alt+d"), self.learn_selected, suppress=True)
+            self.kb.add_hotkey(self.cfg.get("hotkey_learn", "ctrl+alt+d"), self.learn_selected, suppress=False)
         except Exception as e:
             log.error("Learn hotkey not registered: %s", e)
         self.kb.hook(self._on_key)
