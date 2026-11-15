@@ -39,7 +39,7 @@ setup.bat        :: creates .venv, installs packages, downloads the model, start
 build-exe.bat    :: builds dist\FlowType-Windows.zip (the shareable app)
 start-debug.bat  :: runs with a console window to see errors
 ```
-Pushing a tag like `v1.0.0` makes GitHub Actions build the exe and publish it on the Releases page automatically.
+Publishing a release on GitHub (e.g. `v1.0.1`) makes GitHub Actions build the exe and attach `FlowType-Windows.zip` to it automatically.
 
 ## 🔒 Privacy
 - Voice → text happens **locally**; audio never leaves your PC.
