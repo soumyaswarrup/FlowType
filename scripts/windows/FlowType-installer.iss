@@ -1,7 +1,7 @@
 ; Inno Setup script - builds FlowType-Setup.exe (a normal Windows installer).
 ; GitHub Actions runs:  iscc /DMyAppVersion=1.4.0 scripts\windows\FlowType-installer.iss
 #ifndef MyAppVersion
-  #define MyAppVersion "dev"
+  #define MyAppVersion "0.0.0"
 #endif
 
 [Setup]
@@ -28,6 +28,12 @@ CloseApplications=force
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 LicenseFile=..\..\LICENSE
+InfoBeforeFile=..\..\PRIVACY.md
+VersionInfoVersion={#MyAppVersion}
+VersionInfoProductName=FlowType
+VersionInfoProductVersion={#MyAppVersion}
+VersionInfoDescription=FlowType installer
+VersionInfoCompany=FlowType (open source)
 
 [Tasks]
 Name: "desktopicon"; Description: "Create a desktop icon"; GroupDescription: "Shortcuts:"

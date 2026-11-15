@@ -29,8 +29,11 @@ jobs:
       - name: Build FlowType.exe
         run: |
           if (!(Test-Path flowtype.ico)) { python flowtype.py --make-icon }
+          $ver = "${{ github.event.release.tag_name }}"
+          if (-not $ver) { $ver = "0.0.0" }
+          python scripts\windows\make_version_file.py $ver
           python -m PyInstaller --noconfirm --clean --windowed --name FlowType `
-            --icon flowtype.ico `
+            --icon flowtype.ico --version-file version_info.txt `
             --collect-data faster_whisper `
             --collect-binaries ctranslate2 `
             --hidden-import pystray._win32 `
@@ -46,7 +49,7 @@ jobs:
         run: |
           choco install innosetup -y --no-progress
           $ver = "${{ github.event.release.tag_name }}".TrimStart("v")
-          if (-not $ver) { $ver = "dev" }
+          if (-not $ver) { $ver = "0.0.0" }
           & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" "/DMyAppVersion=$ver" scripts\windows\FlowType-installer.iss
           Move-Item dist\FlowType-Setup.exe FlowType-Setup.exe
 
@@ -69,6 +72,7 @@ jobs:
             **Windows:** download **`FlowType-Setup.exe`** below and run it (normal installer, uninstall from Settings → Apps).
             No-install option: `FlowType-Windows.zip` → unzip → `FlowType.exe`.
             Windows may say "Windows protected your PC" → click **More info → Run anyway** (the app isn't code-signed yet).
+            Code signing: free code signing provided by SignPath.io, certificate by SignPath Foundation (application in progress) - see the [code signing policy](https://github.com/soumyaswarrup/FlowType#code-signing-policy).
 
       - name: Keep the zip as a build artifact
         if: github.event_name != 'release'

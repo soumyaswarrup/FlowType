@@ -14,7 +14,9 @@ Speech recognition runs **offline on your PC** (OpenAI Whisper via faster-whispe
 3. The first launch downloads the speech model (~500 MB), so wait a few minutes before your first try.
 4. To uninstall: **Settings → Apps → FlowType → Uninstall**.
 
-No admin rights needed. Prefer no installer? Download **`FlowType-Windows.zip`** instead, unzip it and double-click `FlowType.exe`.
+No admin rights needed. The installer shows the [privacy policy](PRIVACY.md) before installing. Windows builds are built automatically from this repository by GitHub Actions; code signing is being set up with SignPath Foundation (see [Code signing policy](#code-signing-policy)).
+
+Prefer no installer? Download **`FlowType-Windows.zip`** instead, unzip it and double-click `FlowType.exe`.
 
 <details>
 <summary>Windows: run from the source code (for developers)</summary>
@@ -119,8 +121,8 @@ If your PC has an NVIDIA graphics card, FlowType uses it and text appears severa
 ### 6. Live preview
 While you hold the key, the words you're saying appear in the on-screen pill as you speak, so you know it's hearing you right.
 
-### ✍️ Grammar check
-Clear mistakes are fixed before typing (*"I has completed"* → *"I have completed"*). When there's more than one possible fix, a small popup suggests it instead of guessing. Uses the free [LanguageTool](https://languagetool.org) service, so the **dictated text is sent to LanguageTool** for checking. You can turn it off in the tray menu.
+### ✍️ Grammar check (optional, off by default)
+Turn it on in the tray menu → **Grammar check**. Clear mistakes are fixed before typing (*"I has completed"* → *"I have completed"*). When there's more than one possible fix, a small popup suggests it instead of guessing. Uses the free [LanguageTool](https://languagetool.org) service, so when it's on the **dictated text is sent to LanguageTool** for checking (see the [privacy policy](PRIVACY.md)).
 
 ### ⚙️ Settings
 Click the **^** arrow next to the clock → **right-click the purple mic**: command mode AI, tone, live preview, grammar check, email formatting, auto-send, snippets & words, history, quit.
@@ -130,10 +132,20 @@ Python app (`platform_support.py` = everything that differs between Windows / ma
 Publishing a release on GitHub (e.g. `v1.0.1`) makes GitHub Actions build the exe and attach `FlowType-Windows.zip` to it automatically.
 
 ## 🔒 Privacy
+Full details: **[Privacy policy](PRIVACY.md)**.
+
 - Voice → text happens **locally**; audio never leaves your PC.
-- Grammar check sends the **text** to LanguageTool (can be turned off).
+- Grammar check (off by default) sends the **text** to LanguageTool when you turn it on.
 - Command mode with Groq/Claude sends the selected text + instruction to that AI; with Ollama everything stays on your PC.
 - History is saved only on your PC (`%APPDATA%\FlowType\history.jsonl`).
+
+## Code signing policy
+Windows releases are being prepared for free code signing provided by [SignPath.io](https://about.signpath.io/), certificate by [SignPath Foundation](https://signpath.org/) (application in progress; until it is approved, Windows shows a "Windows protected your PC" notice).
+
+- **Committers and reviewers:** [Soumya Swarup Sahoo (@soumyaswarrup)](https://github.com/soumyaswarrup)
+- **Approvers:** [Soumya Swarup Sahoo (@soumyaswarrup)](https://github.com/soumyaswarrup)
+- Every release is built automatically by GitHub Actions from this repository and each signing request is approved manually.
+- **Privacy:** this program will not transfer any information to other networked systems unless specifically requested by the user or the person installing or operating it. See the [privacy policy](PRIVACY.md) for exactly what the optional grammar check and command mode send.
 
 ## License
 MIT

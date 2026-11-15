@@ -34,7 +34,7 @@ DEFAULT_CONFIG = {
     "model": "small.en",
     "device": "auto",            # auto = use an NVIDIA GPU if one is set up, else CPU
     "compute_type": "auto",
-    "grammar_check": True,
+    "grammar_check": False,       # opt-in: sends dictated text to LanguageTool (see PRIVACY.md)
     "grammar_language": "en-US",
     "email_format": True,
     "input_device": None,
@@ -403,7 +403,7 @@ class App:
                     if self.cfg.get("cleanup") == "llm":
                         self.ui.put(("working", "Polishing"))
                     text = tp.postprocess(raw, self.cfg, title, log) if raw else ""
-                    if text and self.cfg.get("grammar_check", True) and tone != "plain":
+                    if text and self.cfg.get("grammar_check", False) and tone != "plain":
                         self.ui.put(("working", "Checking grammar"))
                         try:
                             text, fixes, sugg = tp.grammar_fix(text, self.cfg)
@@ -580,7 +580,7 @@ class App:
         return "   ·   ".join(parts)
 
     def toggle_grammar(self, *_):
-        self.cfg["grammar_check"] = not self.cfg.get("grammar_check", True)
+        self.cfg["grammar_check"] = not self.cfg.get("grammar_check", False)
         save_settings({"grammar_check": self.cfg["grammar_check"]})
         self.ui.put(("info", "Grammar check ON" if self.cfg["grammar_check"] else "Grammar check OFF"))
 
@@ -764,8 +764,8 @@ class App:
               checked=lambda item: bool(self.cfg.get("live_preview", True))),
             M(lambda item: "Tone: " + TONES.get(self.tone_setting(), "Auto"),
               pystray.Menu(*[tone_item(t) for t in ("auto", "casual", "professional", "code", "plain")])),
-            M("Grammar check (fix + suggest)", self.toggle_grammar,
-              checked=lambda item: bool(self.cfg.get("grammar_check", True))),
+            M("Grammar check (online, via LanguageTool)", self.toggle_grammar,
+              checked=lambda item: bool(self.cfg.get("grammar_check", False))),
             M("Email formatting in Gmail / Outlook", self.toggle_email,
               checked=lambda item: bool(self.cfg.get("email_format", True))),
             M("Auto-send (press Enter after each message)", self.toggle_auto_send,
@@ -850,6 +850,19 @@ def self_install():
     import subprocess
     here = os.path.normcase(os.path.abspath(APP_DIR))
     if here == os.path.normcase(os.path.abspath(INSTALL_DIR)):
+        return False
+    if os.path.exists(os.path.join(APP_DIR, "portable.txt")):
+        return False
+    answer = ctypes.windll.user32.MessageBoxW(
+        None,
+        "Install FlowType for your Windows account?\n\n"
+        "Yes: copies FlowType to your user folder and adds Start-menu and Desktop shortcuts, "
+        "and starts it when you sign in (you can remove it later).\n\n"
+        "No: just run it from this folder, without changing anything on your PC.",
+        "FlowType", 0x04 | 0x20)  # Yes/No, question icon
+    if answer != 6:  # not Yes -> run portable, don't touch the system
+        with open(os.path.join(APP_DIR, "portable.txt"), "w") as f:
+            f.write("FlowType runs from this folder without installing. Delete this file to be asked again.\n")
         return False
     # stop an older installed copy so its files can be replaced
     subprocess.run(["taskkill", "/f", "/im", "FlowType.exe", "/fi", f"PID ne {os.getpid()}"],
