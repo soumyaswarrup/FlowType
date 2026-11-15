@@ -7,35 +7,32 @@ Speech recognition runs **offline on your PC** (OpenAI Whisper via faster-whispe
 
 ## ⬇️ Install — pick one
 
-### Option A (Windows): ready-made app (easiest, no Python needed)
-1. Go to **[Releases](../../releases/latest)** and download **`FlowType-Windows.zip`**.
-2. Unzip it and double-click **`FlowType.exe`**. It installs itself, adds a Desktop icon and starts with Windows.
-   - If Windows says *"Windows protected your PC"*, click **More info → Run anyway** (the app isn't code-signed).
-3. The first launch downloads the speech model (~500 MB), so give it a few minutes before your first try.
+### Windows (recommended): the installer
+1. Go to **[Releases](../../releases/latest)** and download **`FlowType-Setup.exe`**.
+2. Run it and click through the usual installer: *Next → Install → Finish*. It adds FlowType to the Start menu (plus a Desktop icon and start-at-sign-in if you tick those), and starts it.
+   - If Windows says *"Windows protected your PC"*, click **More info → Run anyway**. That appears for every new app that isn't code-signed yet.
+3. The first launch downloads the speech model (~500 MB), so wait a few minutes before your first try.
+4. To uninstall: **Settings → Apps → FlowType → Uninstall**.
 
-### Option B (Windows): from the source code (Download ZIP or git clone)
-1. Get the code, either way:
-   - Click the green **Code** button → **Download ZIP**, then unzip it (e.g. to `Documents\FlowType`), **or**
-   - `git clone https://github.com/soumyaswarrup/FlowType.git`
-2. Open the folder and double-click **`setup.bat`**. It will:
-   - find Python 3.10–3.14, or install Python 3.12 for you (via winget) if you don't have it,
-   - create a private `.venv` and install the packages,
-   - download the speech model (~500 MB, one time),
-   - add Desktop / Start-menu shortcuts, set FlowType to start with Windows, and start it.
-   Takes about 5 minutes. Details are written to `setup.log`.
-3. From then on, start it with the **FlowType** Desktop icon (or `FlowType.bat`).
+No admin rights needed. Prefer no installer? Download **`FlowType-Windows.zip`** instead, unzip it and double-click `FlowType.exe`.
 
-Keep the folder where it is after setup, because the shortcuts point to it. If something doesn't work, run **`start-debug.bat`** to see the error.
+<details>
+<summary>Windows: run from the source code (for developers)</summary>
 
-| File | What it does |
+1. Click **Code → Download ZIP** (and unzip) or `git clone https://github.com/soumyaswarrup/FlowType.git`.
+2. Double-click **`scripts\windows\setup.bat`**. It finds or installs Python, installs the packages and the speech model, adds shortcuts and starts FlowType (about 5 minutes; details in `setup.log`).
+3. Afterwards start it from the **FlowType** Desktop icon. Keep the folder where it is, because the shortcuts point to it.
+
+| Script (`scripts/windows/`) | What it does |
 |---|---|
-| `setup.bat` | One-time install (Option B) |
+| `setup.bat` | One-time install from source |
 | `FlowType.bat` | Start / restart FlowType |
 | `start-debug.bat` | Run with a console window to see errors |
-| `build-exe.bat` | Build your own `FlowType-Windows.zip` (the Option A app) |
+| `build-exe.bat` | Build `FlowType.exe` yourself (PyInstaller) |
+| `FlowType-installer.iss` | Inno Setup script for `FlowType-Setup.exe` |
 | `enable-gpu.bat` | Optional: use an NVIDIA GPU for faster text |
 | `remove-from-startup.bat` | Stop FlowType starting with Windows |
-| `setup.sh` / `flowtype.sh` / `uninstall-autostart.sh` | Same jobs on macOS / Linux |
+</details>
 
 ### macOS and Linux
 1. Get the code: green **Code** button → **Download ZIP** (then unzip), or `git clone https://github.com/soumyaswarrup/FlowType.git`.
@@ -51,12 +48,12 @@ Keep the folder where it is after setup, because the shortcuts point to it. If s
 
 | | Windows | macOS | Linux |
 |---|---|---|---|
-| Install | `FlowType.exe` or `setup.bat` | `bash setup.sh` | `bash setup.sh` |
-| Start / restart | `FlowType.bat` | `bash flowtype.sh` | `bash flowtype.sh` |
+| Install | `FlowType-Setup.exe` | `bash setup.sh` | `bash setup.sh` |
+| Start / restart | Start menu → FlowType | `bash flowtype.sh` | `bash flowtype.sh` |
 | Dictate | hold Ctrl+Alt | hold Ctrl+Option | hold Ctrl+Alt |
 | Command mode | hold Ctrl+Alt+Shift | hold Ctrl+Option+Shift | hold Ctrl+Alt+Shift |
 | Settings menu | tray icon (^ next to clock) | menu-bar icon | tray icon* |
-| NVIDIA GPU | ✅ (`enable-gpu.bat`) | — (CPU; Apple Silicon is fast) | ✅ with CUDA installed |
+| NVIDIA GPU | ✅ (source install: `enable-gpu.bat`) | — (CPU; Apple Silicon is fast) | ✅ with CUDA installed |
 
 \*Linux notes: needs an **X11 session** for global hotkeys and typing (on Wayland they only work in X11/XWayland apps, so pick "Ubuntu on Xorg" or similar at login). On GNOME, the tray icon needs the *AppIndicator* extension; everything else works without it.
 
@@ -117,7 +114,7 @@ Right-click the purple mic → **Tone** and pick how you want to sound. Everythi
 The pill shows your current tone while you talk (e.g. "Listening · Professional"). Email layout in Gmail/Outlook still applies in any tone.
 
 ### 5. Uses your NVIDIA GPU automatically
-If your PC has an NVIDIA graphics card, FlowType uses it and text appears several times faster. Running from source? Double-click **`enable-gpu.bat`** once to install the GPU libraries. The tray menu shows **Ready (GPU)** or **Ready (CPU)**.
+If your PC has an NVIDIA graphics card, FlowType uses it and text appears several times faster. Running from source? Double-click **`scripts\windows\enable-gpu.bat`** once to install the GPU libraries. The tray menu shows **Ready (GPU)** or **Ready (CPU)**.
 
 ### 6. Live preview
 While you hold the key, the words you're saying appear in the on-screen pill as you speak, so you know it's hearing you right.

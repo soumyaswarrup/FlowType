@@ -1,5 +1,6 @@
 @echo off
-cd /d "%~dp0"
+cd /d "%~dp0..\.."
+set "ROOT=%CD%\"
 if not exist ".venv\Scripts\pythonw.exe" (
   echo FlowType is not set up yet. Run setup.bat first.
   pause
@@ -7,4 +8,4 @@ if not exist ".venv\Scripts\pythonw.exe" (
 )
 rem stop any running copy so this always (re)starts the latest version
 powershell -NoProfile -Command "Get-CimInstance Win32_Process | Where-Object { $_.Name -eq 'pythonw.exe' -and $_.CommandLine -like '*flowtype.py*' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }" >nul 2>&1
-start "" ".venv\Scripts\pythonw.exe" "%~dp0flowtype.py"
+start "" ".venv\Scripts\pythonw.exe" "%ROOT%flowtype.py"

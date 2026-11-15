@@ -1,8 +1,9 @@
 @echo off
 setlocal EnableExtensions
-cd /d "%~dp0"
+cd /d "%~dp0..\.."
+set "ROOT=%CD%\"
 title FlowType setup
-set "LOG=%~dp0setup.log"
+set "LOG=%ROOT%setup.log"
 echo FlowType setup %date% %time% > "%LOG%"
 echo === FlowType setup ===
 echo (Full details are written to setup.log)
@@ -40,14 +41,14 @@ if errorlevel 1 (
 )
 echo Creating shortcuts (Desktop, Start menu, start with Windows)...
 ".venv\Scripts\python.exe" flowtype.py --make-icon >> "%LOG%" 2>&1
-powershell -NoProfile -ExecutionPolicy Bypass -Command "$d='%~dp0'; $w=New-Object -ComObject WScript.Shell; foreach($p in @([Environment]::GetFolderPath('Desktop'), [Environment]::GetFolderPath('Programs'), [Environment]::GetFolderPath('Startup'))){ $s=$w.CreateShortcut($p+'\FlowType.lnk'); $s.TargetPath=$d+'.venv\Scripts\pythonw.exe'; $s.Arguments='\"'+$d+'flowtype.py\"'; $s.WorkingDirectory=$d; $s.IconLocation=$d+'flowtype.ico'; $s.Description='FlowType voice typing'; $s.Save() }" >> "%LOG%" 2>&1
+powershell -NoProfile -ExecutionPolicy Bypass -Command "$d='%ROOT%'; $w=New-Object -ComObject WScript.Shell; foreach($p in @([Environment]::GetFolderPath('Desktop'), [Environment]::GetFolderPath('Programs'), [Environment]::GetFolderPath('Startup'))){ $s=$w.CreateShortcut($p+'\FlowType.lnk'); $s.TargetPath=$d+'.venv\Scripts\pythonw.exe'; $s.Arguments='\"'+$d+'flowtype.py\"'; $s.WorkingDirectory=$d; $s.IconLocation=$d+'flowtype.ico'; $s.Description='FlowType voice typing'; $s.Save() }" >> "%LOG%" 2>&1
 echo SETUP OK >> "%LOG%"
 echo.
 echo === Done! Starting FlowType... ===
 echo Hold Ctrl+Alt, speak, release.  Ctrl+Shift+Space = hands-free.
 echo Right-click the mic icon near the clock to pick Odia / Hindi and "English letters".
 powershell -NoProfile -Command "Get-CimInstance Win32_Process | Where-Object { $_.Name -eq 'pythonw.exe' -and $_.CommandLine -like '*flowtype.py*' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }" >nul 2>&1
-start "" ".venv\Scripts\pythonw.exe" "%~dp0flowtype.py"
+start "" ".venv\Scripts\pythonw.exe" "%ROOT%flowtype.py"
 goto end
 
 :pipfail

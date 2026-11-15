@@ -1,8 +1,9 @@
 @echo off
 setlocal
-cd /d "%~dp0"
+cd /d "%~dp0..\.."
+set "ROOT=%CD%\"
 title Building FlowType.exe
-set "LOG=%~dp0build.log"
+set "LOG=%ROOT%build.log"
 echo Build started %date% %time% > "%LOG%"
 echo Building FlowType.exe for sharing - takes 3-8 minutes...
 
@@ -24,7 +25,7 @@ if exist dist rmdir /s /q dist
 if not exist "dist\FlowType\FlowType.exe" ( echo [X] Packaging failed - see build.log & echo BUILD FAILED >> "%LOG%" & pause & exit /b 1 )
 
 echo [3/4] Testing the packaged app...
-start "" /wait "dist\FlowType\FlowType.exe" --selftest "%~dp0selftest.txt"
+start "" /wait "dist\FlowType\FlowType.exe" --selftest "%ROOT%selftest.txt"
 type selftest.txt >> "%LOG%"
 findstr /c:"SELFTEST OK" selftest.txt >nul || ( echo [X] Self-test failed - see build.log & echo BUILD FAILED selftest >> "%LOG%" & pause & exit /b 1 )
 
