@@ -36,6 +36,14 @@ Prefer no installer? Download **`FlowType-Windows.zip`** instead, unzip it and d
 | `remove-from-startup.bat` | Stop FlowType starting with Windows |
 </details>
 
+### Windows: if your laptop blocks .exe and .bat files (work laptops)
+1. Install **Python 3.12** from the **Microsoft Store** (search "Python 3.12" → Get).
+2. Download this project (**Code → Download ZIP**) and unzip it.
+3. Double-click **`install.pyw`**. It installs everything and adds a **FlowType** shortcut to your desktop and Start menu.
+4. Start FlowType from that shortcut (or double-click **`FlowType.pyw`**).
+
+Check with your IT team first if your company has rules about installing software.
+
 ### macOS and Linux
 1. Get the code: green **Code** button → **Download ZIP** (then unzip), or `git clone https://github.com/soumyaswarrup/FlowType.git`.
 2. Open a terminal in that folder and run:
